@@ -103,6 +103,24 @@ class DrawingView @JvmOverloads constructor(
                         val radius = hypot((event.x - shapeStartX).toDouble(), (event.y - shapeStartY).toDouble()).toFloat()
                         previewPath?.addCircle(shapeStartX, shapeStartY, radius, Path.Direction.CW)
                     }
+                    ShapeType.SPHERE -> {
+                        previewPath?.reset()
+                        val radius = hypot(
+                            (event.x - shapeStartX).toDouble(),
+                            (event.y - shapeStartY).toDouble()
+                        ).toFloat()
+
+                        previewPath?.addCircle(shapeStartX, shapeStartY, radius, Path.Direction.CW)
+
+                        val r = radius * (1.toFloat() / (2))
+                        val rect = RectF(
+                            shapeStartX - radius,
+                            shapeStartY - r,
+                            shapeStartX + radius,
+                            shapeStartY + r
+                        )
+                        previewPath?.addOval(rect, Path.Direction.CW)
+                    }
                     ShapeType.TRIANGLE -> {
                         previewPath?.moveTo((shapeStartX + event.x) / 2, shapeStartY)
                         previewPath?.lineTo(shapeStartX, event.y)
@@ -173,7 +191,7 @@ class DrawingView @JvmOverloads constructor(
                         // X axis (red, right-up)
                         previewPath?.apply {
                             moveTo(ox, oy)
-                            lineTo(ox + axisLength * 4, oy - axisLength / 16) // slight upward tilt
+                            lineTo(ox + axisLength * 4, oy - axisLength / 18) // slight upward tilt
                         }
 
                         // Y axis (green, vertical-left)

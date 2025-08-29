@@ -233,6 +233,10 @@ class MainActivity : AppCompatActivity() {
                 drawingView.setShapeMode(ShapeType.RAY)
                 popupWindow.dismiss()
             }
+            popupView.findViewById<View>(R.id.shape_sphere).setOnClickListener {
+                drawingView.setShapeMode(ShapeType.SPHERE)
+                popupWindow.dismiss()
+            }
         }
 
         desmosButton.setOnClickListener {
