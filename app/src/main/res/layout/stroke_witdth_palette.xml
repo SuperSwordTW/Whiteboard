@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="horizontal"
+    android:padding="8dp"
+    android:background="@drawable/popup_background"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:gravity="center">
+
+    <!-- Example color dots -->
+
+    <View
+        android:id="@+id/width_small"
+        android:layout_width="16dp"
+        android:layout_height="16dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/color_circle_white"/>
+
+    <View
+        android:id="@+id/width_medium"
+        android:layout_width="20dp"
+        android:layout_height="20dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/color_circle_white"/>
+
+    <View
+        android:id="@+id/width_large"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/color_circle_white"/>
+
+
+
+</LinearLayout>

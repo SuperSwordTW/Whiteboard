@@ -1,0 +1,31 @@
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+
+<item
+    android:id="@+id/action_copy"
+    android:title="@string/copy_selected"
+    app:showAsAction="never" />
+
+<item
+    android:id="@+id/action_delete_page"
+    android:title="@string/delete_page"
+    app:showAsAction="never" />
+
+<item
+    android:id="@+id/action_save"
+    android:title="Save"
+    app:showAsAction="never" />
+
+<item
+    android:id="@+id/action_load"
+    android:title="Load"
+    app:showAsAction="never" />
+
+<item
+    android:id="@+id/action_delete_file"
+    android:title="Delete File"
+    app:showAsAction="never" />
+
+
+</menu>

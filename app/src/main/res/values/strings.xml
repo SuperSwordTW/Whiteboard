@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Whiteboard</string>
+    <string name="draw">Draw</string>
+    <string name="select">Select</string>
+    <string name="delete_selected">Delete Selected</string>
+    <string name="copy_selected">Copy Selected</string>
+    <string name="move_selected">Move Selected</string>
+    <string name="ic_palette" />
+    <string name="previous_page">Previous Page</string>
+    <string name="next_page" />
+    <string name="page_number">%1$d / %2$d</string>
+    <string name="erase" />
+    <string name="desmos" />
+    <string name="shape" />
+    <string name="delete_page">Delete this page</string>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="action_delete_page" type="id" />
+    <item name="drawing_view" type="id" />
+</resources>

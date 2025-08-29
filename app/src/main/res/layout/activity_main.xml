@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Container for DrawingView -->
+
+
+    <!-- Our custom Toolbar 274C43 -->
+    <FrameLayout
+        android:id="@+id/drawing_container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#274C43"/>
+
+    <!-- Render for desmos -->
+
+    <WebView
+        android:id="@+id/desmos_webview"
+        android:layout_width="match_parent"
+        android:layout_height="400dp"
+        android:visibility="gone" />
+
+
+
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="#8B4513"
+        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar">
+
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <!-- Centered tool buttons -->
+            <LinearLayout
+                android:id="@+id/toolbar_center_group"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:layout_centerInParent="true">
+
+                <ImageButton
+                    android:id="@+id/btn_color"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_palette"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/ic_palette"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_draw"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_draw"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/draw"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_select"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_select"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/select"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_delete"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_delete"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/delete_selected"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_shape"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_menu_crop"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/shape"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_desmos"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_desmos"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/desmos"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_math"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_math"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/desmos"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_undo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_undo"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/desmos"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_redo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_redo"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/desmos"
+                    app:tint="@android:color/white" />
+            </LinearLayout>
+
+            <!-- Right-aligned page controls -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_alignParentEnd="true"
+                android:layout_centerVertical="true">
+
+                <ImageButton
+                    android:id="@+id/btn_prev_page"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_arrow_left"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/previous_page"
+                    app:tint="@android:color/white" />
+
+                <TextView
+                    android:id="@+id/tv_page_number"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="1/1"
+                    android:textColor="@android:color/white"
+                    android:layout_marginHorizontal="8dp" />
+
+                <ImageButton
+                    android:id="@+id/btn_next_page"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_arrow_right"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/next_page"
+                    app:tint="@android:color/white" />
+            </LinearLayout>
+
+        </RelativeLayout>
+    </androidx.appcompat.widget.Toolbar>
+
+
+</LinearLayout>

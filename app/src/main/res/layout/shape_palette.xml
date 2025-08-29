@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="horizontal"
+    android:padding="8dp"
+    android:background="@drawable/popup_background"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content">
+
+    <View
+        android:id="@+id/shape_rectangle"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_rectangle"/>
+
+    <View
+        android:id="@+id/shape_circle"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_circle"/>
+
+    <View
+        android:id="@+id/shape_triangle"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_triangle"/>
+
+    <View
+        android:id="@+id/shape_cube"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_cube"/>
+
+    <View
+        android:id="@+id/shape_axis"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_axis"/>
+
+    <View
+        android:id="@+id/shape_segment"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_segment"/>
+
+    <View
+        android:id="@+id/shape_ray"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_ray"/>
+
+</LinearLayout>
