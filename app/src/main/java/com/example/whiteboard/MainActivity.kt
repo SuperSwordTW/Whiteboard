@@ -151,6 +151,45 @@ class MainActivity : AppCompatActivity() {
 
         desmosWebView.loadUrl("https://www.desmos.com/calculator")
 
+        val desmosHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <script src="https://www.desmos.com/api/v1.8/calculator.js?apiKey=dcb31709b452b1cf9dc26972add0fda6"></script>
+              <style>
+                html, body, #calculator {
+                  width: 100%;
+                  height: 100%;
+                  margin: 0;
+                }
+              </style>
+            </head>
+            <body>
+              <div id="calculator"></div>
+              <script>
+                var elt = document.getElementById('calculator');
+                window.calculator = Desmos.GraphingCalculator(elt, {
+                  expressions: true,
+                  expressionsCollapsed: true
+                });
+                // Optional: add a default expression
+                // calculator.setExpression({ id: 'default', latex: 'y=x^2' });
+              </script>
+            </body>
+            </html>
+            """.trimIndent()
+
+
+        desmosWebView.loadDataWithBaseURL(
+            "https://www.desmos.com",
+            desmosHtml,
+            "text/html",
+            "utf-8",
+            null
+        )
+
+
 
         // Setup toolbar
         val toolbar: Toolbar = findViewById(R.id.toolbar)
@@ -168,6 +207,15 @@ class MainActivity : AppCompatActivity() {
                     Log.d("Mathmode", "editor.part = ${it.part}, editor.isIdle = ${it.isIdle}")
                     val latex = recognizeSelectedStrokes(it, strokes)
                     showRecognizedMath(latex, strokes)
+                }
+                drawingView.setMathingMode(false)
+            }
+            override fun onSendRecognizeStrokes(strokes: List<Stroke>) {
+                Log.d("Mathmode", "onSendRecognizeStrokes fired")
+                editorData?.editor?.let {
+                    Log.d("Mathmode", "editor.part = ${it.part}, editor.isIdle = ${it.isIdle}")
+                    val latex = recognizeSelectedStrokes(it, strokes)
+                    sendLatexToDesmos(latex)
                 }
                 drawingView.setMathingMode(false)
             }
@@ -191,9 +239,16 @@ class MainActivity : AppCompatActivity() {
         val undoButton = findViewById<ImageButton>(R.id.btn_undo)
         val redoButton = findViewById<ImageButton>(R.id.btn_redo)
         val mathButton = findViewById<ImageButton>(R.id.btn_math)
+        val sendButton = findViewById<ImageButton>(R.id.btn_send)
 
         undoButton.setOnClickListener { drawingView.undo() }
         redoButton.setOnClickListener { drawingView.redo() }
+
+        sendButton.setOnClickListener {
+            drawingView.setSelectionMode(true)
+            drawingView.setMathingMode(true)
+            drawingView.setSendMathingMode()
+        }
 
         shapeButton.setOnClickListener {
             val popupView = layoutInflater.inflate(R.layout.shape_palette, null)
@@ -243,7 +298,6 @@ class MainActivity : AppCompatActivity() {
             isDesmosVisible = !isDesmosVisible
             desmosWebView.visibility = if (isDesmosVisible) View.VISIBLE else View.GONE
         }
-
 
         drawButton.setOnClickListener {
 
@@ -448,6 +502,18 @@ class MainActivity : AppCompatActivity() {
             }
             true
         }
+    }
+
+    private var desmosExprCounter = 0
+
+    private fun sendLatexToDesmos(latex: String?) {
+        val jsLatex = org.json.JSONObject.quote(latex) // ensures proper escaping
+        desmosExprCounter ++
+        val exprId = "expr$desmosExprCounter"
+        desmosWebView.evaluateJavascript(
+            "calculator.setExpression({ id: '$exprId', latex: $jsLatex });",
+            null
+        )
     }
 
 

@@ -66,6 +66,8 @@ class DrawingView @JvmOverloads constructor(
 
     private var isMathing = false
 
+    private var isSending = false
+
     // Selection rectangle
     private var selectionPath: Path? = null
 
@@ -547,6 +549,7 @@ class DrawingView @JvmOverloads constructor(
 
     interface OnRecognizeStrokesListener {
         fun onRecognizeStrokes(strokes: List<Stroke>)
+        fun onSendRecognizeStrokes(strokes: List<Stroke>)
     }
 
     var recognizeListener: OnRecognizeStrokesListener? = null
@@ -675,10 +678,15 @@ class DrawingView @JvmOverloads constructor(
                         }
                     }
 
-                    if (isSelecting && isMathing && selectedStrokes.isNotEmpty()) {
+                    if (isSelecting && isMathing && selectedStrokes.isNotEmpty() && !isSending) {
                         recognizeListener?.onRecognizeStrokes(selectedStrokes)
                         Log.d("Mathmode", "Mathmode detected")
                     }
+                    if (isSelecting && isMathing && selectedStrokes.isNotEmpty() && isSending) {
+                        recognizeListener?.onSendRecognizeStrokes(selectedStrokes)
+                        Log.d("Mathmode", "Sendingmode detected")
+                    }
+
                 }
                 isDraggingSelection = false
                 activeHandleIndex = -1
@@ -743,6 +751,12 @@ class DrawingView @JvmOverloads constructor(
         }
         setSelectionMode(selecting)
         isMathing = selecting
+        isSending = false
+        invalidate()
+    }
+
+    fun setSendMathingMode() {
+        isSending = true
         invalidate()
     }
 
