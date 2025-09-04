@@ -5,27 +5,34 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <!-- Container for DrawingView -->
-
-
-    <!-- Our custom Toolbar 274C43 -->
-    <FrameLayout
-        android:id="@+id/drawing_container"
+    <!-- Top workspace: Drawing (left) + Desmos WebView (right) -->
+    <LinearLayout
+        android:id="@+id/workspace_row"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="#274C43"/>
+        android:orientation="horizontal">
 
-    <!-- Render for desmos -->
+        <!-- Left: DrawingView container -->
+        <FrameLayout
+            android:id="@+id/drawing_container"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="#274C43" />
 
-    <WebView
-        android:id="@+id/desmos_webview"
-        android:layout_width="match_parent"
-        android:layout_height="400dp"
-        android:visibility="gone" />
+        <!-- Right: Desmos WebView -->
+        <WebView
+            android:id="@+id/desmos_webview"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:visibility="gone" />
+        <!-- Tip: start hidden; when visible it takes 50% (same weight as left).
+             Adjust weights as you like (e.g., left=2, right=1). -->
+    </LinearLayout>
 
-
-
+    <!-- Bottom toolbar -->
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
@@ -53,6 +60,15 @@
                     android:src="@drawable/ic_palette"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/ic_palette"
+                    app:tint="@android:color/white" />
+
+                <ImageButton
+                    android:id="@+id/btn_stroke_width"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_stroke_width"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/draw"
                     app:tint="@android:color/white" />
 
                 <ImageButton
@@ -175,6 +191,5 @@
 
         </RelativeLayout>
     </androidx.appcompat.widget.Toolbar>
-
 
 </LinearLayout>

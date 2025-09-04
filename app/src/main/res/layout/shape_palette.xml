@@ -62,4 +62,11 @@
         android:layout_margin="4dp"
         android:background="@drawable/ic_sphere"/>
 
+    <View
+        android:id="@+id/shape_parabola"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_parabola"/>
+
 </LinearLayout>

@@ -26,15 +26,163 @@ import com.myscript.iink.uireferenceimplementation.EditorData
 import com.myscript.iink.uireferenceimplementation.EditorView
 import com.myscript.iink.uireferenceimplementation.FontUtils
 import android.util.Log
-
+import java.util.concurrent.ConcurrentHashMap
 
 class DrawingView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
+    private class SpatialHash(private val cellSize: Float = 128f) {
+        private val grid = HashMap<Long, MutableSet<Stroke>>()
+
+        private fun key(ix: Int, iy: Int): Long {
+            return (ix.toLong() shl 32) xor (iy.toLong() and 0xffffffffL)
+        }
+
+        private fun cellsFor(bounds: RectF): Sequence<Pair<Int, Int>> {
+            val minX = floor(bounds.left / cellSize).toInt()
+            val minY = floor(bounds.top / cellSize).toInt()
+            val maxX = floor(bounds.right / cellSize).toInt()
+            val maxY = floor(bounds.bottom / cellSize).toInt()
+            return sequence {
+                for (ix in minX..maxX) {
+                    for (iy in minY..maxY) {
+                        yield(ix to iy)
+                    }
+                }
+            }
+        }
+
+        // INSERT inside SpatialHash
+        fun purge(stroke: Stroke) {
+            val it = grid.entries.iterator()
+            while (it.hasNext()) {
+                val entry = it.next()
+                val cell = entry.value
+                if (cell.remove(stroke) && cell.isEmpty()) {
+                    it.remove()
+                }
+            }
+        }
+
+        fun insert(stroke: Stroke, bounds: RectF) {
+            cellsFor(bounds).forEach { (ix, iy) ->
+                val k = key(ix, iy)
+                val cell = grid.getOrPut(k) { mutableSetOf() }
+                cell.add(stroke)
+            }
+        }
+
+        fun remove(stroke: Stroke, bounds: RectF) {
+            cellsFor(bounds).forEach { (ix, iy) ->
+                val k = key(ix, iy)
+                grid[k]?.let { cell ->
+                    cell.remove(stroke)
+                    if (cell.isEmpty()) grid.remove(k)
+                }
+            }
+        }
+
+        fun update(stroke: Stroke, oldBounds: RectF?, newBounds: RectF) {
+            if (oldBounds != null) remove(stroke, oldBounds)
+            insert(stroke, newBounds)
+        }
+
+        fun query(aabb: RectF): Set<Stroke> {
+            val out = LinkedHashSet<Stroke>()
+            cellsFor(aabb).forEach { (ix, iy) ->
+                grid[key(ix, iy)]?.let(out::addAll)
+            }
+            return out
+        }
+
+        fun clear() = grid.clear()
+    }
+
+    private val selectionBoxPaint = Paint().apply {
+        color = Color.RED
+        style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
+    }
+
+    private val dirtyTransformStrokes = LinkedHashSet<Stroke>()
+
+    private var indexDirty = false
+
+    // Cached clip rects (reused each frame)
+    private val clipRect = Rect()
+    private val clipRectF = RectF()
+
+    // Selection bounds recompute flag
+    private var selectionBoundsDirty = true
+
     private val strokes = mutableListOf<Stroke>()
     private var currentPath: Path? = null
+
+    // INSERT after existing field declarations
+    private val spatial = SpatialHash(128f)
+    private val strokeAabbs = ConcurrentHashMap<Stroke, RectF>()
+    private val tmpStrokeBounds = RectF()
+
+    private fun aabbOf(stroke: Stroke): RectF {
+        // Lazily compute and cache expanded AABB
+        return strokeAabbs[stroke] ?: run {
+            val r = RectF()
+            stroke.path.computeBounds(r, true)
+            val pad = stroke.paint.strokeWidth / 2f
+            r.inset(-pad, -pad)
+            strokeAabbs[stroke] = r
+            r
+        }
+    }
+
+    private fun markDirty(stroke: Stroke) {
+        // Drop cached AABB; it will be recomputed lazily on next draw
+        strokeAabbs.remove(stroke)
+    }
+
+    private fun markSelectionBoundsDirty() {
+        selectionBoundsDirty = true
+    }
+
+    private fun computeStrokeAabb(stroke: Stroke, out: RectF = RectF()): RectF {
+        stroke.path.computeBounds(out, true)
+        val pad = stroke.paint.strokeWidth / 2f
+        out.inset(-pad, -pad)
+        return out
+    }
+
+    private fun indexStroke(stroke: Stroke) {
+        val aabb = computeStrokeAabb(stroke)
+        strokeAabbs[stroke] = RectF(aabb)
+        spatial.insert(stroke, aabb)
+    }
+
+    private fun unindexStroke(stroke: Stroke) {
+        strokeAabbs.remove(stroke)?.let { spatial.remove(stroke, it) }
+        val now = RectF()
+        stroke.path.computeBounds(now, true)
+        val pad = stroke.paint.strokeWidth * 0.5f
+        now.inset(-pad, -pad)
+        spatial.remove(stroke, now)
+
+        // Final guarantee: purge from any cell it might still be in
+        spatial.purge(stroke)
+    }
+
+    private fun reindexStroke(stroke: Stroke) {
+        val old = strokeAabbs[stroke]
+        val now = computeStrokeAabb(stroke)
+        strokeAabbs[stroke] = RectF(now)
+        spatial.update(stroke, old, now)
+    }
+
+    private fun rebuildSpatialIndex() {
+        spatial.clear()
+        strokeAabbs.clear()
+        for (s in strokes) indexStroke(s)
+    }
 
     private val undoStack = mutableListOf<List<Stroke>>()
     private val redoStack = mutableListOf<List<Stroke>>()
@@ -73,6 +221,7 @@ class DrawingView @JvmOverloads constructor(
 
     // Selected strokes
     private val selectedStrokes = mutableListOf<Stroke>()
+
 
     private fun copyStrokes(strokes: List<Stroke>): List<Stroke> {
         return strokes.map { stroke ->
@@ -255,6 +404,30 @@ class DrawingView @JvmOverloads constructor(
                             lineTo(x2, y2)
                         }
                     }
+                    ShapeType.PARABOLA -> {
+                        previewPath?.reset()
+
+                        // Span/scale based on drag distance (similar to how SPHERE used radius)
+                        val dx = event.x - shapeStartX
+                        val dy = event.y - shapeStartY
+                        val span = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
+                        // Horizontal half-width and vertical offset (mirror the SPHERE's radius/half-radius idea)
+                        val halfWidth = span
+                        val m = span * 1.5f
+
+                        val leftX = shapeStartX - halfWidth
+                        val rightX = shapeStartX + halfWidth
+
+                        // Drag below the start → opens downward; drag above → opens upward
+                        val opensDown = event.y <= shapeStartY
+                        val endY = if (opensDown) shapeStartY + m else shapeStartY - m
+                        val ctrlY = if (opensDown) shapeStartY - m else shapeStartY + m
+
+                        // A quadratic Bézier is a parabola segment; control at (h, k ± m) keeps vertex at (h, k)
+                        previewPath?.moveTo(leftX, endY)
+                        previewPath?.quadTo(shapeStartX, ctrlY, rightX, endY)
+                    }
                     null -> {}
                 }
             }
@@ -264,7 +437,11 @@ class DrawingView @JvmOverloads constructor(
                 if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
                 // Commit shape as stroke
                 previewPath?.let {
-                    strokes.add(Stroke(it, currentPaint))
+                    val newStroke = Stroke(it, currentPaint)
+                    strokes.add(newStroke)
+                    indexStroke(newStroke)
+                    aabbOf(newStroke)
+                    indexDirty = true
                 }
                 previewPath = null
             }
@@ -303,6 +480,13 @@ class DrawingView @JvmOverloads constructor(
     fun setStrokes(strokeList: List<Stroke>) {
         strokes.clear()
         strokes.addAll(strokeList)
+        strokeAabbs.clear()
+        // Precompute AABBs for fast first frame
+        for (s in strokes) aabbOf(s)
+        selectedStrokes.clear()
+        selectionPath = null
+        markSelectionBoundsDirty()
+        rebuildSpatialIndex()
         invalidate()
     }
 
@@ -325,44 +509,55 @@ class DrawingView @JvmOverloads constructor(
     private val selectionBounds = RectF()
     private val handlePoints = mutableListOf<PointF>()
     init {
-        repeat(5) { handlePoints.add(PointF()) }
+        repeat(6) { handlePoints.add(PointF()) }
     }
-    private val handleRadius = 10f
+    private val handleRadius = 15f
     private val handlePaint = Paint().apply {
         color = Color.BLUE
         style = Paint.Style.FILL
     }
 
-    private fun computeSelectionBounds() {
-        if (selectedStrokes.isEmpty()) return
+    private val copyhandlePaint = Paint().apply {
+        color = "#8F00FF".toColorInt()
+        style = Paint.Style.FILL
+    }
 
-        // Reset selectionBounds
+    private fun computeSelectionBounds() {
+        if (!selectionBoundsDirty) return
+
+        if (selectedStrokes.isEmpty()) {
+            selectionBounds.setEmpty()
+            selectionBoundsDirty = false
+            if (handlePoints.isEmpty()) repeat(6) { handlePoints.add(PointF()) }
+            for (p in handlePoints) p.set(0f, 0f)
+            return
+        }
+
         selectionBounds.setEmpty()
 
-        // Union all stroke bounds
+        // Use cached stroke AABBs to union quickly
         val tmpRect = RectF()
         for (stroke in selectedStrokes) {
-            stroke.path.computeBounds(tmpRect, true)
+            tmpRect.set(aabbOf(stroke))
             selectionBounds.union(tmpRect)
         }
 
-        // Ensure handlePoints list has 5 points (4 corners + rotation handle)
-        while (handlePoints.size < 5) {
-            handlePoints.add(PointF())
-        }
+        // Ensure handlePoints list has 5 points (4 corners + rotation)
+        while (handlePoints.size < 5) handlePoints.add(PointF())
 
         // Corner handles
-        handlePoints[0].set(selectionBounds.left, selectionBounds.top)      // top-left
-        handlePoints[1].set(selectionBounds.right, selectionBounds.top)     // top-right
-        handlePoints[2].set(selectionBounds.right, selectionBounds.bottom)  // bottom-right
-        handlePoints[3].set(selectionBounds.left, selectionBounds.bottom)   // bottom-left
+        handlePoints[0].set(selectionBounds.left, selectionBounds.top)
+        handlePoints[1].set(selectionBounds.right, selectionBounds.top)
+        handlePoints[2].set(selectionBounds.right, selectionBounds.bottom)
+        handlePoints[3].set(selectionBounds.left, selectionBounds.bottom)
 
-        // Rotation handle (top-center above the box)
-        val handleOffset = 60f // distance above the selection box
-        handlePoints[4].set(
-            selectionBounds.centerX(),
-            selectionBounds.top - handleOffset
-        )
+        // Rotation handle (top-center)
+        val handleOffset = 60f
+        handlePoints[4].set(selectionBounds.centerX(), selectionBounds.top - handleOffset)
+        // Copy handle
+        handlePoints[5].set(selectionBounds.centerX()+60f, selectionBounds.top - handleOffset)
+
+        selectionBoundsDirty = false
     }
 
 
@@ -392,71 +587,86 @@ class DrawingView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // Draw all saved strokes
+        // Current clip (screen) area
+        canvas.getClipBounds(clipRect)
+        clipRectF.set(clipRect)
+
+        // Draw only strokes that intersect the clip rect (using cached AABBs)
         for (stroke in strokes) {
+            val r = aabbOf(stroke)
+            if (!RectF.intersects(r, clipRectF)) continue
             canvas.drawPath(stroke.path, stroke.paint)
         }
 
-        if (selectedStrokes.isNotEmpty()) {
-            computeSelectionBounds()
-
-            // Draw bounding box
-            val dashPaint = Paint().apply {
-                color = Color.RED
-                style = Paint.Style.STROKE
-                pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
-            }
-            canvas.drawRect(selectionBounds, dashPaint)
-
-            // Draw handles
-            for ((index, point) in handlePoints.withIndex()) {
-                if (index == handlePoints.size - 1) {
-                    // Last handle = rotation handle (square)
-                    val halfSize = handleRadius
-                    canvas.drawRect(
-                        point.x - halfSize,
-                        point.y - halfSize,
-                        point.x + halfSize,
-                        point.y + halfSize,
-                        handlePaint
-                    )
-                } else {
-                    // Normal circular handles
-                    canvas.drawCircle(point.x, point.y, handleRadius, handlePaint)
-                }
-            }
-        }
-
-        // Draw current path (while drawing)
+        // Current in-progress path
         currentPath?.let {
             canvas.drawPath(it, currentPaint)
         }
 
-        // Draw selection path (line drawn for selection)
+        // Selection lasso/path
         selectionPath?.let { path ->
             canvas.drawPath(path, selectionPaint)
         }
 
-        // Draw preview path (optional dashed/gray path)
+        // Selection box + handles and highlights (only if selection intersects screen)
+        if (selectedStrokes.isNotEmpty()) {
+            computeSelectionBounds()
+            if (!selectionBounds.isEmpty && RectF.intersects(selectionBounds, clipRectF)) {
+                // Bounding box
+                canvas.drawRect(selectionBounds, selectionBoxPaint)
+
+                // Handles
+                for ((index, point) in handlePoints.withIndex()) {
+                    if (index == handlePoints.size - 2) {
+                        val halfSize = handleRadius
+                        canvas.drawRect(
+                            point.x - halfSize, point.y - halfSize,
+                            point.x + halfSize, point.y + halfSize,
+                            handlePaint
+                        )
+                    }
+                    else if (index == handlePoints.size - 1){
+                        val halfSize = handleRadius
+                        canvas.drawRect(
+                            point.x - halfSize, point.y - halfSize,
+                            point.x + halfSize, point.y + halfSize,
+                            copyhandlePaint
+                        )
+                    }
+                    else {
+                        canvas.drawCircle(point.x, point.y, handleRadius, handlePaint)
+                    }
+                }
+            }
+
+            // Highlight only visible selected strokes
+            for (stroke in selectedStrokes) {
+                val rSel = aabbOf(stroke)
+                if (!RectF.intersects(rSel, clipRectF)) continue
+                canvas.drawRect(rSel, highlightPaint)
+            }
+        }
+
+        // Preview path (shapes)
         previewPath?.let {
             canvas.drawPath(it, previewPaint)
         }
-
-        // Highlight selected strokes
-        for (stroke in selectedStrokes) {
-            stroke.path.computeBounds(tempBounds, true)
-            tempBounds.inset(-stroke.paint.strokeWidth / 2, -stroke.paint.strokeWidth / 2)
-            canvas.drawRect(tempBounds, highlightPaint)
-        }
     }
 
+    private val regionClip = Region()
+    private val regionTemp = Region()
 
     private fun isPointInPath(path: Path, x: Float, y: Float): Boolean {
         val bounds = RectF()
         path.computeBounds(bounds, true)
-        val region = Region()
-        region.setPath(path, Region(bounds.left.toInt(), bounds.top.toInt(), bounds.right.toInt(), bounds.bottom.toInt()))
-        return region.contains(x.toInt(), y.toInt())
+
+        // Use roundOut to avoid losing edge coverage due to truncation
+        val clip = Rect()
+        bounds.roundOut(clip)
+
+        regionClip.set(clip)
+        regionTemp.setPath(path, regionClip)
+        return regionTemp.contains(x.toInt(), y.toInt())
     }
 
     private fun isPointNearPath(path: Path, x: Float, y: Float, threshold: Float): Boolean {
@@ -478,28 +688,32 @@ class DrawingView @JvmOverloads constructor(
 
     private fun pathIntersects(selection: Path, stroke: Stroke): Boolean {
         val strokeMeasure = PathMeasure(stroke.path, false)
+
+        // Handle zero-length paths (dots) by using the path's bounds
+        if (strokeMeasure.length == 0f) {
+            val bounds = RectF()
+            stroke.path.computeBounds(bounds, true)
+            val cx = bounds.centerX()
+            val cy = bounds.centerY()
+            val threshold = stroke.paint.strokeWidth
+            if (isPointNearPath(selection, cx, cy, threshold)) return true
+            if (isPointInPath(selection, cx, cy)) return true
+            return false
+        }
+
+        // Otherwise, iterate along the path as before
         val strokeStep = 5f
         val strokePos = FloatArray(2)
-
         var distance = 0f
         while (distance < strokeMeasure.length) {
             strokeMeasure.getPosTan(distance, strokePos, null)
-
-            // 1️⃣ Check if the point is close to the selection path
-            if (isPointNearPath(selection, strokePos[0], strokePos[1], stroke.paint.strokeWidth / 2)) {
-                return true
-            }
-
-            // 2️⃣ Check if the point is fully inside the selection path (lasso)
-            if (isPointInPath(selection, strokePos[0], strokePos[1])) {
-                return true
-            }
-
+            if (isPointNearPath(selection, strokePos[0], strokePos[1], stroke.paint.strokeWidth / 2)) return true
+            if (isPointInPath(selection, strokePos[0], strokePos[1])) return true
             distance += strokeStep
         }
-
         return false
     }
+
 
     private var shapeMode: ShapeType? = null
     private var shapeStartX = 0f
@@ -530,7 +744,11 @@ class DrawingView @JvmOverloads constructor(
                 redoStack.clear() // Clear redo history
                 if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
                 currentPath?.let {
-                    strokes.add(Stroke(it, currentPaint))
+                    val newStroke = Stroke(it, currentPaint)
+                    strokes.add(newStroke)
+                    indexStroke(newStroke)
+                    aabbOf(newStroke)
+                    indexDirty = true
                 }
                 currentPath = null
             }
@@ -564,10 +782,15 @@ class DrawingView @JvmOverloads constructor(
                     // First check if user touched a handle
                     activeHandleIndex = getHandleAt(x, y)
                     if (activeHandleIndex != -1) {
-                        transformMode = if (activeHandleIndex == handlePoints.size - 1) {
+                        if (activeHandleIndex == handlePoints.size - 1){
+                            copySelected()
+                            return
+                        }
+                        transformMode = if (activeHandleIndex == handlePoints.size - 2) {
                             // Last handle = rotation handle
                             TransformMode.ROTATE
-                        } else {
+                        }
+                        else {
                             // Other handles = scale
                             TransformMode.SCALE
                         }
@@ -613,10 +836,12 @@ class DrawingView @JvmOverloads constructor(
                         moveSelected(dx, dy)
                         lastTouchX = x
                         lastTouchY = y
+                        dirtyTransformStrokes.addAll(selectedStrokes)
+                        indexDirty = true
+                        markSelectionBoundsDirty()
                     }
                     TransformMode.SCALE -> {
                         // Scale relative to selection center
-                        computeSelectionBounds()
                         val centerX = selectionBounds.centerX()
                         val centerY = selectionBounds.centerY()
 
@@ -639,7 +864,7 @@ class DrawingView @JvmOverloads constructor(
                         tmpMatrix.postScale(scaleX, scaleY, centerX, centerY)
 
                         // Compute stroke scaling factor
-                        val strokeScale = sqrt(scaleX * scaleY)
+                        val strokeScale = sqrt(abs(scaleX * scaleY))
 
                         for (stroke in selectedStrokes) {
                             // Scale the path
@@ -647,12 +872,14 @@ class DrawingView @JvmOverloads constructor(
 
                             // Scale the stroke width
                             stroke.paint.strokeWidth *= strokeScale
+                            markDirty(stroke)
                         }
-
-                        computeSelectionBounds()
+                        markSelectionBoundsDirty()
 
                         lastTouchX = x
                         lastTouchY = y
+                        dirtyTransformStrokes.addAll(selectedStrokes)
+                        indexDirty = true
                     }
                     TransformMode.ROTATE -> {
                         computeSelectionBounds()
@@ -669,11 +896,15 @@ class DrawingView @JvmOverloads constructor(
                         tmpMatrix.postRotate(deltaAngle, centerX, centerY)
                         for (stroke in selectedStrokes) {
                             stroke.path.transform(tmpMatrix)
+                            markDirty(stroke)
                         }
+                        markSelectionBoundsDirty()
 
                         // Update last touch for next move
                         lastTouchX = x
                         lastTouchY = y
+                        dirtyTransformStrokes.addAll(selectedStrokes)
+                        indexDirty = true
                     }
                     else -> {
                         // Continue drawing selection line
@@ -683,19 +914,42 @@ class DrawingView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-
                 if (transformMode == TransformMode.NONE && !isDraggingSelection && selectionPath != null) {
+                    if (indexDirty) {
+                        // If you implemented a spatial hash earlier, make sure to update it here.
+                        // Example with AABB cache or spatial structure:
+                        // Super Important
+                        if (dirtyTransformStrokes.isNotEmpty()) {
+                            // Reindex only those strokes whose geometry changed
+                            for (s in dirtyTransformStrokes) {
+                                reindexStroke(s)
+                            }
+                            dirtyTransformStrokes.clear()
+                        } else {
+                            // Added/removed/undo/redo or unknown mutations → safest is full rebuild
+//                            rebuildSpatialIndex()
+                        }
+                        indexDirty = false
+                    }
                     undoStack.add(copyStrokes(strokes))
                     redoStack.clear() // Clear redo history
                     if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
 
-                    // Select strokes that intersect the selection line
+                    // Coarse: AABB query first, then precise path check
                     selectedStrokes.clear()
-                    for (stroke in strokes) {
+                    val aabb = RectF()
+                    selectionPath!!.computeBounds(aabb, true)
+                    // Small expansion helps catch near-line hits
+                    aabb.inset(-24f, -24f)
+
+                    val candidates = spatial.query(aabb)
+                    for (stroke in candidates) {
+                        // Fine test
                         if (pathIntersects(selectionPath!!, stroke)) {
                             selectedStrokes.add(stroke)
                         }
                     }
+                    markSelectionBoundsDirty()
 
                     if (isSelecting && isMathing && selectedStrokes.isNotEmpty() && !isSending) {
                         recognizeListener?.onRecognizeStrokes(selectedStrokes)
@@ -705,7 +959,12 @@ class DrawingView @JvmOverloads constructor(
                         recognizeListener?.onSendRecognizeStrokes(selectedStrokes)
                         Log.d("Mathmode", "Sendingmode detected")
                     }
-
+                    if (dirtyTransformStrokes.isNotEmpty()) {
+                        for (s in dirtyTransformStrokes) {
+                            reindexStroke(s)
+                        }
+                        dirtyTransformStrokes.clear()
+                    }
                 }
                 isDraggingSelection = false
                 activeHandleIndex = -1
@@ -720,7 +979,12 @@ class DrawingView @JvmOverloads constructor(
             val previous = undoStack.removeAt(undoStack.lastIndex)
             strokes.clear()
             strokes.addAll(copyStrokes(previous))
+            rebuildSpatialIndex()
+            strokeAabbs.clear()
+            for (s in strokes) aabbOf(s)
+            markSelectionBoundsDirty()
             selectedStrokes.clear()
+            indexDirty = true
             selectionPath = null
             invalidate()
         }
@@ -732,7 +996,12 @@ class DrawingView @JvmOverloads constructor(
             val next = redoStack.removeAt(redoStack.lastIndex)
             strokes.clear()
             strokes.addAll(copyStrokes(next))
+            rebuildSpatialIndex()
+            strokeAabbs.clear()
+            for (s in strokes) aabbOf(s)
+            markSelectionBoundsDirty()
             selectedStrokes.clear()
+            indexDirty = true
             selectionPath = null
             invalidate()
         }
@@ -785,27 +1054,71 @@ class DrawingView @JvmOverloads constructor(
         matrix.setTranslate(dx, dy)
         for (stroke in selectedStrokes) {
             stroke.path.transform(matrix)
+            markDirty(stroke)
+            dirtyTransformStrokes.add(stroke)
         }
+        markSelectionBoundsDirty()
         invalidate()
     }
 
     /** Delete selected strokes */
     fun deleteSelected() {
+        dirtyTransformStrokes.removeAll(selectedStrokes)
+        for (s in selectedStrokes) {
+            unindexStroke(s)
+            strokeAabbs.remove(s)
+        }
         strokes.removeAll(selectedStrokes)
         selectedStrokes.clear()
+        indexDirty = true
         selectionPath = null
+        markSelectionBoundsDirty()
         invalidate()
     }
 
     /** Copy selected strokes */
+    /** Copy selected strokes with an offset */
     fun copySelected() {
-        val newStrokes = selectedStrokes.map { stroke ->
-            val newPath = Path(stroke.path) // copy
-            Stroke(newPath, Paint(stroke.paint))
+        if (selectedStrokes.isEmpty()) return
+
+        // Offset amount for the pasted copies
+        val offsetX = 20f
+        val offsetY = 20f
+
+        // Duplicate + translate each selected stroke
+        val newStrokes = selectedStrokes.map { src ->
+            val newPath = Path(src.path)
+            val m = Matrix().apply { setTranslate(offsetX, offsetY) }
+            newPath.transform(m)
+            Stroke(newPath, Paint(src.paint))
         }
+
+        // Add to model
         strokes.addAll(newStrokes)
+
+        // If you maintain AABB cache and/or spatial hash, index each new stroke now
+        // (so no need to set indexDirty here)
+        newStrokes.forEach { s ->
+            // If you have these helpers, keep them:
+            // aabbOf(s)                 // populate AABB cache
+            // indexStroke(s)            // add to spatial hash
+            // If you only have one of them, call the one you use.
+        }
+
+        // Make ONLY the copies selected
+        selectedStrokes.clear()
+        selectedStrokes.addAll(newStrokes)
+
+        // Reset any selection gesture path and refresh selection box
+        selectionPath = null
+        // If you use a dirty flag system:
+        // selectionBoundsDirty = true
+        // else recompute immediately:
+        computeSelectionBounds()
+
         invalidate()
     }
+
 
     override fun performClick(): Boolean {
         super.performClick()

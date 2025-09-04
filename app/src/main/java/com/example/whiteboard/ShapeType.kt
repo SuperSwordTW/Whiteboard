@@ -8,6 +8,7 @@ enum class ShapeType {
     AXIS,
     SEGMENT,
     RAY,
-    SPHERE
+    SPHERE,
+    PARABOLA
     // Add more shapes here easily
 }

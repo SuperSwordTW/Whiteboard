@@ -229,6 +229,7 @@ class MainActivity : AppCompatActivity() {
 
         // --- Handle toolbar button clicks ---
         val drawButton = findViewById<ImageButton>(R.id.btn_draw)
+        val strokewidthButton = findViewById<ImageButton>(R.id.btn_stroke_width)
         val selectButton = findViewById<ImageButton>(R.id.btn_select)
         val colorButton = findViewById<ImageButton>(R.id.btn_color)
         val deleteButton = findViewById<ImageButton>(R.id.btn_delete)
@@ -243,6 +244,31 @@ class MainActivity : AppCompatActivity() {
 
         undoButton.setOnClickListener { drawingView.undo() }
         redoButton.setOnClickListener { drawingView.redo() }
+
+        strokewidthButton.setOnClickListener {
+            val popupView = layoutInflater.inflate(R.layout.stroke_witdth_palette, null)
+
+            val popupWindow = PopupWindow(
+                popupView,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                true
+            )
+            popupWindow.showAsDropDown(shapeButton, -280, -shapeButton.height - 16)
+
+            popupView.findViewById<View>(R.id.width_small).setOnClickListener {
+                drawingView.setStrokeWidth(3f)
+                popupWindow.dismiss()
+            }
+            popupView.findViewById<View>(R.id.width_medium).setOnClickListener {
+                drawingView.setStrokeWidth(10f)
+                popupWindow.dismiss()
+            }
+            popupView.findViewById<View>(R.id.width_large).setOnClickListener {
+                drawingView.setStrokeWidth(20f)
+                popupWindow.dismiss()
+            }
+        }
 
         sendButton.setOnClickListener {
             drawingView.setSelectionMode(true)
@@ -292,6 +318,10 @@ class MainActivity : AppCompatActivity() {
                 drawingView.setShapeMode(ShapeType.SPHERE)
                 popupWindow.dismiss()
             }
+            popupView.findViewById<View>(R.id.shape_parabola).setOnClickListener {
+                drawingView.setShapeMode(ShapeType.PARABOLA)
+                popupWindow.dismiss()
+            }
         }
 
         desmosButton.setOnClickListener {
@@ -300,30 +330,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         drawButton.setOnClickListener {
-
             drawingView.setDrawingMode()
-            val popupView = layoutInflater.inflate(R.layout.stroke_witdth_palette, null)
-
-            val popupWindow = PopupWindow(
-                popupView,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                true
-            )
-            popupWindow.showAsDropDown(shapeButton, -190, -shapeButton.height - 16)
-
-            popupView.findViewById<View>(R.id.width_small).setOnClickListener {
-                drawingView.setStrokeWidth(3f)
-                popupWindow.dismiss()
-            }
-            popupView.findViewById<View>(R.id.width_medium).setOnClickListener {
-                drawingView.setStrokeWidth(10f)
-                popupWindow.dismiss()
-            }
-            popupView.findViewById<View>(R.id.width_large).setOnClickListener {
-                drawingView.setStrokeWidth(20f)
-                popupWindow.dismiss()
-            }
         }
 
         selectButton.setOnClickListener {
