@@ -658,6 +658,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        autoSaveHandler.postDelayed(autoSaveRunnable, autoSaveInterval)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        autoSaveHandler.removeCallbacks(autoSaveRunnable)
+    }
+
     override fun onDestroy() {
         autoSaveHandler.removeCallbacks(autoSaveRunnable)
         editorData?.editor?.close()

@@ -620,17 +620,36 @@ class DrawingView @JvmOverloads constructor(
                         val centerX = selectionBounds.centerX()
                         val centerY = selectionBounds.centerY()
 
-                        val prevDist = hypot(lastTouchX - centerX, lastTouchY - centerY)
-                        val newDist = hypot(x - centerX, y - centerY)
-                        if (prevDist > 0) {
-                            val scale = newDist / prevDist
-                            tmpMatrix.reset()
-                            tmpMatrix.postScale(scale, scale, centerX, centerY)
-                            for (stroke in selectedStrokes) {
-                                stroke.path.transform(tmpMatrix)
-                            }
-                            computeSelectionBounds()
+                        val prevDx = lastTouchX - centerX
+                        val prevDy = lastTouchY - centerY
+                        val newDx = x - centerX
+                        val newDy = y - centerY
+
+                        var scaleX = 1f
+                        var scaleY = 1f
+
+                        if (prevDx != 0f) {
+                            scaleX = newDx / prevDx
                         }
+                        if (prevDy != 0f) {
+                            scaleY = newDy / prevDy
+                        }
+
+                        tmpMatrix.reset()
+                        tmpMatrix.postScale(scaleX, scaleY, centerX, centerY)
+
+                        // Compute stroke scaling factor
+                        val strokeScale = sqrt(scaleX * scaleY)
+
+                        for (stroke in selectedStrokes) {
+                            // Scale the path
+                            stroke.path.transform(tmpMatrix)
+
+                            // Scale the stroke width
+                            stroke.paint.strokeWidth *= strokeScale
+                        }
+
+                        computeSelectionBounds()
 
                         lastTouchX = x
                         lastTouchY = y
