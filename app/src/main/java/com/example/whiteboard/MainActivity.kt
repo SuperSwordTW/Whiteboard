@@ -36,7 +36,8 @@ import android.util.Log
 import android.annotation.SuppressLint
 import android.view.MotionEvent
 import android.view.GestureDetector
-import android.graphics.Rect
+import com.example.whiteboard.MathInputNormalizer
+import com.example.whiteboard.WolframCloudConverter
 
 class MainActivity : AppCompatActivity() {
 
@@ -124,7 +125,7 @@ class MainActivity : AppCompatActivity() {
 
                 // Configure Math
                 editor.configuration.apply {
-                    setBoolean("math.solver.enable", true)
+                    setBoolean("math.solver.enable", false)
                     setString("math.configuration.bundle", "math")
                     setString("math.configuration.name", "standard")
                 }
@@ -204,9 +205,17 @@ class MainActivity : AppCompatActivity() {
             override fun onRecognizeStrokes(strokes: List<Stroke>) {
                 Log.d("Mathmode", "onRecognizeStrokes fired")
                 editorData?.editor?.let {
+
                     Log.d("Mathmode", "editor.part = ${it.part}, editor.isIdle = ${it.isIdle}")
+
                     val latex = recognizeSelectedStrokes(it, strokes)
-                    showRecognizedMath(latex, strokes)
+
+
+
+                    onRecognizedMath(latex, strokes)
+
+//                    showRecognizedMath(result, strokes)
+
                 }
                 drawingView.setMathingMode(false)
             }
@@ -391,9 +400,65 @@ class MainActivity : AppCompatActivity() {
 
     private val tmpRect = RectF()
 
+    private val wolfram by lazy {
+        WolframAlphaClient(appId = "8GAVHGL5LL")
+    }
+
+    private val wolframCloud by lazy {
+        WolframCloudConverter(apiUrl = "https://www.wolframcloud.com/obj/linjustin0209/tex-to-wl")
+    }
+
+    // REPLACE the existing method in MainActivity with this version
+    fun onRecognizedMath(input: String?, strokes: List<Stroke>) {
+        val text = input?.trim()
+        if (text.isNullOrEmpty()) return
+
+        val (okTeX, wlInput) = wolframCloud.toWolframLanguageFromTeX(text)
+//        val waInput = MathInputNormalizer.latexToWolframQuery(text)
+        val waInput = if (okTeX) wlInput else MathInputNormalizer.latexToWolframQuery(text)
+        Log.d("Mathmode","converted string: $waInput")
+
+        val full = wolfram.queryFullResult(waInput)
+        val displayText: String = if (full.ok && !full.primaryText.isNullOrBlank()) {
+            full.primaryText!!
+        } else {
+            full.errorMessage ?: "No result."
+        }
+
+        val latex = MathInputNormalizer.plainToLatex(displayText)
+        val input = concatLatex(text, latex)
+
+        Log.d("Mathmode","string ouputted to wolfram: $input")
+
+        showRecognizedMath(input, strokes)
+    }
+
+    private fun concatLatex(base: String?, next: String?): String {
+        val b = base?.trim().orEmpty()
+        val n = next?.trim().orEmpty()
+        if (b.isEmpty()) return n
+        if (n.isEmpty()) return b
+
+        // Join with a space so things like "x=1" and "y=2" don't collide
+        return "$b \\newline $n"
+    }
+
+
+    private fun showWolframResultDialog(query: String, resultText: String) {
+        val msg = "Query:\n$query\n\nResult:\n$resultText"
+        AlertDialog.Builder(this)
+            .setTitle("Wolfram|Alpha")
+            .setMessage(msg)
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
     private fun showRecognizedMath(latex: String?, strokes: List<Stroke>) {
         if (latex.isNullOrEmpty() || strokes.isEmpty()) return
+
+        Log.d("Mathmode", "showRecognizedMath called")
 
         // Compute bounding box
         val bounds = RectF()
