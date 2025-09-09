@@ -458,7 +458,8 @@ class DrawingView @JvmOverloads constructor(
                 handleShapeTouch(event)
             }
             else -> {
-                handleDrawingTouch(event)
+//                handleDrawingTouch(event) Switched to multi-point touch detection.
+                handleMultiFingerDrawingTouch(event)
             }
         }
 
@@ -598,6 +599,10 @@ class DrawingView @JvmOverloads constructor(
             canvas.drawPath(stroke.path, stroke.paint)
         }
 
+        for ((_, path) in activePaths) {
+            canvas.drawPath(path, currentPaint)
+        }
+
         // Current in-progress path
         currentPath?.let {
             canvas.drawPath(it, currentPaint)
@@ -731,6 +736,45 @@ class DrawingView @JvmOverloads constructor(
         setMathingMode(false)
     }
 
+    private val activePaths = mutableMapOf<Int, Path>()
+
+    private fun handleMultiFingerDrawingTouch(event: MotionEvent) {
+        val pointerIndex = event.actionIndex
+        val pointerId = event.getPointerId(pointerIndex)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // New finger starts drawing
+                val path = Path().apply {
+                    moveTo(event.getX(pointerIndex), event.getY(pointerIndex))
+                }
+                activePaths[pointerId] = path
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                // Update all active fingers
+                for (i in 0 until event.pointerCount) {
+                    val id = event.getPointerId(i)
+                    activePaths[id]?.lineTo(event.getX(i), event.getY(i))
+                }
+            }
+
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_POINTER_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                // Finger finished — finalize stroke
+                activePaths[pointerId]?.let { path ->
+                    val newStroke = Stroke(path, currentPaint)
+                    strokes.add(newStroke)
+                    indexStroke(newStroke)
+                    aabbOf(newStroke)
+                    indexDirty = true
+                }
+                activePaths.remove(pointerId)
+            }
+        }
+    }
     private fun handleDrawingTouch(event: MotionEvent) {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
@@ -1100,8 +1144,8 @@ class DrawingView @JvmOverloads constructor(
         // (so no need to set indexDirty here)
         newStrokes.forEach { s ->
             // If you have these helpers, keep them:
-            // aabbOf(s)                 // populate AABB cache
-            // indexStroke(s)            // add to spatial hash
+             aabbOf(s)                 // populate AABB cache
+             indexStroke(s)            // add to spatial hash
             // If you only have one of them, call the one you use.
         }
 
@@ -1112,9 +1156,9 @@ class DrawingView @JvmOverloads constructor(
         // Reset any selection gesture path and refresh selection box
         selectionPath = null
         // If you use a dirty flag system:
-        // selectionBoundsDirty = true
+         selectionBoundsDirty = true
         // else recompute immediately:
-        computeSelectionBounds()
+//        computeSelectionBounds()
 
         invalidate()
     }
