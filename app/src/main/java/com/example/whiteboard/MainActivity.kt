@@ -596,21 +596,29 @@ class MainActivity : AppCompatActivity() {
 
 
     fun nextPage() {
-        // Save current strokes
+        // Always clear selection/transform state BEFORE snapshotting or page swap,
+        // so no selected object from this page can be acted on after we leave it.
+        drawingView.clearSelectionState()
+
+        // Persist current page strokes
         pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
 
+        // Advance or create a new page
         if (currentPageIndex < pages.size - 1) {
             currentPageIndex++
         } else {
-            // Add a new blank page
             pages.add(mutableListOf())
             currentPageIndex = pages.size - 1
         }
+
+        // Load target page strokes; setStrokes() already hard-resets selection + indices
         drawingView.setStrokes(pages[currentPageIndex])
+
         updatePageNumber()
     }
 
     fun previousPage() {
+        drawingView.clearSelectionState()
         // Save current strokes
         pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
 

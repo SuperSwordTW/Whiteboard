@@ -439,9 +439,7 @@ class DrawingView @JvmOverloads constructor(
                 previewPath?.let {
                     val newStroke = Stroke(it, currentPaint)
                     strokes.add(newStroke)
-                    indexStroke(newStroke)
-                    aabbOf(newStroke)
-                    indexDirty = true
+                    afteraddstroke(newStroke)
                 }
                 previewPath = null
             }
@@ -478,16 +476,40 @@ class DrawingView @JvmOverloads constructor(
 
     fun getStrokes(): List<Stroke> = strokes
 
-    fun setStrokes(strokeList: List<Stroke>) {
-        strokes.clear()
-        strokes.addAll(strokeList)
-        strokeAabbs.clear()
-        // Precompute AABBs for fast first frame
-        for (s in strokes) aabbOf(s)
+
+    fun clearSelectionState() {
+        // Selection set + gesture state
         selectedStrokes.clear()
         selectionPath = null
-        markSelectionBoundsDirty()
+
+        // Handles / transform state (names based on snippets you shared)
+        activeHandleIndex = -1
+        transformMode = TransformMode.NONE
+        handlePoints.clear()
+        dirtyTransformStrokes.clear()
+
+        // Bounds/UI invalidation
+        selectionBoundsDirty = true
+        computeSelectionBounds()
+        invalidate()
+    }
+
+    fun setStrokes(strokeList: List<Stroke>) {
+        // 1) Hard-reset selection/transform state so nothing from prior page lingers
+        clearSelectionState()
+
+        // 2) Replace stroke model
+        strokes.clear()
+        strokes.addAll(strokeList)
+
+        // 3) Reset fast-path caches and spatial index entirely (no stale refs)
+        strokeAabbs.clear()
+        for (s in strokes) aabbOf(s)
+
+        // If you maintain a spatial index/hash, fully rebuild or clear+reindex
         rebuildSpatialIndex()
+
+        // 4) Final visual refresh
         invalidate()
     }
 
@@ -769,38 +791,12 @@ class DrawingView @JvmOverloads constructor(
                 activePaths[pointerId]?.let { path ->
                     val newStroke = Stroke(path, currentPaint)
                     strokes.add(newStroke)
-                    indexStroke(newStroke)
-                    aabbOf(newStroke)
-                    indexDirty = true
+                    afteraddstroke(newStroke)
 
                 }
                 activePaths.remove(pointerId)
             }
         }
-    }
-    private fun handleDrawingTouch(event: MotionEvent) {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                currentPath = Path().apply { moveTo(event.x, event.y) }
-            }
-            MotionEvent.ACTION_MOVE -> {
-                currentPath?.lineTo(event.x, event.y)
-            }
-            MotionEvent.ACTION_UP -> {
-                undoStack.add(copyStrokes(strokes))
-                redoStack.clear() // Clear redo history
-                if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
-                currentPath?.let {
-                    val newStroke = Stroke(it, currentPaint)
-                    strokes.add(newStroke)
-                    indexStroke(newStroke)
-                    aabbOf(newStroke)
-                    indexDirty = true
-                }
-                currentPath = null
-            }
-        }
-        invalidate()
     }
 
 
@@ -942,11 +938,12 @@ class DrawingView @JvmOverloads constructor(
                             stroke.paint.strokeWidth *= strokeScale
                             markDirty(stroke)
                         }
-                        markSelectionBoundsDirty()
+
 
                         lastTouchX = x
                         lastTouchY = y
                         dirtyTransformStrokes.addAll(selectedStrokes)
+                        markSelectionBoundsDirty()
                         indexDirty = true
                     }
                     TransformMode.ROTATE -> {
@@ -966,12 +963,13 @@ class DrawingView @JvmOverloads constructor(
                             stroke.path.transform(tmpMatrix)
                             markDirty(stroke)
                         }
-                        markSelectionBoundsDirty()
+
 
                         // Update last touch for next move
                         lastTouchX = x
                         lastTouchY = y
                         dirtyTransformStrokes.addAll(selectedStrokes)
+                        markSelectionBoundsDirty()
                         indexDirty = true
                     }
                     else -> {
@@ -980,7 +978,7 @@ class DrawingView @JvmOverloads constructor(
                     }
                 }
             }
-
+            //im here
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (transformMode == TransformMode.NONE && !isDraggingSelection && selectionPath != null) {
                     if (indexDirty) {
@@ -1041,6 +1039,12 @@ class DrawingView @JvmOverloads constructor(
         }
     }
 
+    fun afteraddstroke(newStroke: Stroke){
+        indexStroke(newStroke)
+        aabbOf(newStroke)
+        indexDirty = true
+    }
+
     fun undo() {
         if (undoStack.isNotEmpty()) {
             redoStack.add(copyStrokes(strokes)) // Save current state to redo
@@ -1050,6 +1054,7 @@ class DrawingView @JvmOverloads constructor(
             rebuildSpatialIndex()
             strokeAabbs.clear()
             for (s in strokes) aabbOf(s)
+            dirtyTransformStrokes.addAll(strokes)
             markSelectionBoundsDirty()
             selectedStrokes.clear()
             indexDirty = true
@@ -1067,6 +1072,7 @@ class DrawingView @JvmOverloads constructor(
             rebuildSpatialIndex()
             strokeAabbs.clear()
             for (s in strokes) aabbOf(s)
+            dirtyTransformStrokes.addAll(strokes)
             markSelectionBoundsDirty()
             selectedStrokes.clear()
             indexDirty = true
@@ -1181,8 +1187,10 @@ class DrawingView @JvmOverloads constructor(
         selectionPath = null
         // If you use a dirty flag system:
          selectionBoundsDirty = true
+        dirtyTransformStrokes.addAll(selectedStrokes)
         // else recompute immediately:
-//        computeSelectionBounds()
+        computeSelectionBounds()
+
 
         invalidate()
     }
