@@ -49,23 +49,23 @@ object MathInputNormalizer {
         if (s.isEmpty()) return s
 
         // 1) Strip math fences like $$…$$, \[ … \], \( … \)
-        s = stripMathFences(s)
+//        s = stripMathFences(s)
 
         // 2) Remove sizing wrappers \left \right
         s = s.replace("""\\left""".toRegex(), "")
             .replace("""\\right""".toRegex(), "")
 
         // 3) Normalize common operators and spacing
-        s = normalizeOperators(s)
+//        s = normalizeOperators(s)
 
         // 4) Handle fractions (simple nested)
-        s = expandFractions(s)
+//        s = expandFractions(s)
 
         // 5) Handle sqrt and root forms
-        s = normalizeSqrt(s)
+//        s = normalizeSqrt(s)
 
         // 6) Normalize superscripts/subscripts (keep ASCII markers)
-        s = normalizeScripts(s)
+//        s = normalizeScripts(s)
 
         s = convertAlignedBlocks(s)
 
@@ -73,13 +73,13 @@ object MathInputNormalizer {
         s = convertLatexMatricesToLists(s)
 
         // 8) Map functions \sin -> sin, \log -> log, etc.
-        s = normalizeFunctionNames(s)
+//        s = normalizeFunctionNames(s)
 
         // 9) Map greek names \alpha -> alpha, \pi -> pi, etc.
-        s = mapGreekLetters(s)
+//        s = mapGreekLetters(s)
 
         // 10) Clean up braces and whitespace
-        s = cleanupWhitespace(s)
+//        s = cleanupWhitespace(s)
 
         return s
     }

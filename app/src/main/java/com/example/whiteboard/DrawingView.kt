@@ -763,6 +763,8 @@ class DrawingView @JvmOverloads constructor(
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_POINTER_UP,
             MotionEvent.ACTION_CANCEL -> {
+                undoStack.add(copyStrokes(strokes))
+                redoStack.clear() // Clear redo history
                 // Finger finished — finalize stroke
                 activePaths[pointerId]?.let { path ->
                     val newStroke = Stroke(path, currentPaint)
@@ -770,6 +772,7 @@ class DrawingView @JvmOverloads constructor(
                     indexStroke(newStroke)
                     aabbOf(newStroke)
                     indexDirty = true
+
                 }
                 activePaths.remove(pointerId)
             }
@@ -816,6 +819,31 @@ class DrawingView @JvmOverloads constructor(
 
     var recognizeListener: OnRecognizeStrokesListener? = null
 
+    // --- Add inside DrawingView class (e.g., below other private helpers) ---
+    private fun getSelectedBounds(expandForStrokeWidth: Boolean = true): RectF? {
+        if (selectedStrokes.isEmpty()) return null
+
+        val out = RectF()
+        val tmp = RectF()
+        var first = true
+
+        for (s in selectedStrokes) {
+            s.path.computeBounds(tmp, true)
+            if (expandForStrokeWidth) {
+                val inset = -s.paint.strokeWidth / 2f
+                tmp.inset(inset, inset)
+            }
+            if (first) {
+                out.set(tmp)
+                first = false
+            } else {
+                out.union(tmp)
+            }
+        }
+        return if (first) null else out
+    }
+
+
     private fun handleSelectionTouch(event: MotionEvent) {
         val x = event.x
         val y = event.y
@@ -843,14 +871,10 @@ class DrawingView @JvmOverloads constructor(
                         return
                     }
 
-                    // Otherwise: check if tap was on stroke
-                    val tappedStroke = selectedStrokes.any { stroke ->
-                        stroke.path.computeBounds(tmpRect, true)
-                        tmpRect.inset(-stroke.paint.strokeWidth / 2, -stroke.paint.strokeWidth / 2)
-                        tmpRect.contains(x, y)
-                    }
+                    val selectionBounds = getSelectedBounds(expandForStrokeWidth = true)
+                    val tappedWithinSelection = selectionBounds?.contains(x, y) == true
 
-                    if (!tappedStroke) {
+                    if (!tappedWithinSelection) {
                         // Clear selection
                         selectedStrokes.clear()
                         selectionPath = null

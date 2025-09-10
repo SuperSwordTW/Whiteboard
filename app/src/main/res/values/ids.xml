@@ -2,4 +2,6 @@
 <resources>
     <item name="action_delete_page" type="id" />
     <item name="drawing_view" type="id" />
+    <item name="shape_parabola" type="id" />
+    <item name="btn_stroke_width" type="id" />
 </resources>

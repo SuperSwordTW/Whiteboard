@@ -413,10 +413,15 @@ class MainActivity : AppCompatActivity() {
         val text = input?.trim()
         if (text.isNullOrEmpty()) return
 
-        val (okTeX, wlInput) = wolframCloud.toWolframLanguageFromTeX(text)
-//        val waInput = MathInputNormalizer.latexToWolframQuery(text)
-        val waInput = if (okTeX) wlInput else MathInputNormalizer.latexToWolframQuery(text)
+//        val (okTeX, waInput) = wolframCloud.toWolframLanguageFromTeX(text)
+        val waInput = MathInputNormalizer.latexToWolframQuery(text)
+//        val waInput = if (okTeX) wlInput else MathInputNormalizer.latexToWolframQuery(text)
         Log.d("Mathmode","converted string: $waInput")
+
+//        if (!okTeX){
+//            Log.d("Mathmode","Conversion failed")
+//            return
+//        }
 
         val full = wolfram.queryFullResult(waInput)
         val displayText: String = if (full.ok && !full.primaryText.isNullOrBlank()) {
