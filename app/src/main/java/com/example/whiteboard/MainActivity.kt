@@ -405,35 +405,52 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val wolframCloud by lazy {
-        WolframCloudConverter(apiUrl = "https://www.wolframcloud.com/obj/linjustin0209/tex-to-wl")
+        WolframCloudConverter(texToWlUrl = "https://www.wolframcloud.com/obj/linjustin0209/tex-to-wl", wlToTexUrl = "https://www.wolframcloud.com/obj/linjustin0209/wl-to-tex")
     }
 
     // REPLACE the existing method in MainActivity with this version
     fun onRecognizedMath(input: String?, strokes: List<Stroke>) {
-        val text = input?.trim()
+        var text = input?.trim()
         if (text.isNullOrEmpty()) return
 
-//        val (okTeX, waInput) = wolframCloud.toWolframLanguageFromTeX(text)
-        val waInput = MathInputNormalizer.latexToWolframQuery(text)
-//        val waInput = if (okTeX) wlInput else MathInputNormalizer.latexToWolframQuery(text)
+        Log.d("Mathmode","Original string: $text")
+
+        var (okTeX, waInput) = wolframCloud.toWolframLanguageFromTeX(text)
+//        var waInput = MathInputNormalizer.convertAlignedBlocks(text)
+//        waInput = MathInputNormalizer.convertLatexMatricesToLists(text)
+
+
         Log.d("Mathmode","converted string: $waInput")
 
-//        if (!okTeX){
-//            Log.d("Mathmode","Conversion failed")
-//            return
-//        }
+        if (waInput == "Failed") {
+            waInput = text
+        }
+
+
+//        val short = wolfram.queryShortAnswer(waInput)
 
         val full = wolfram.queryFullResult(waInput)
+
+//        val displayText: String = if (short.ok && !short.text.isNullOrBlank()) {
+//            short.text
+//        } else {
+//            short.errorMessage?: "No result."
+//        }
+
         val displayText: String = if (full.ok && !full.primaryText.isNullOrBlank()) {
             full.primaryText!!
         } else {
             full.errorMessage ?: "No result."
         }
 
-        val latex = MathInputNormalizer.plainToLatex(displayText)
+//        val latex = MathInputNormalizer.plainToLatex(displayText)
+        var (oklatex,latex) = wolframCloud.toTeXFromWolframLanguage(displayText)
+        if (latex == "\\text{\$\\\$\$Failed}") {
+            latex = MathInputNormalizer.plainToLatex(displayText)
+        }
         val input = concatLatex(text, latex)
 
-        Log.d("Mathmode","string ouputted to wolfram: $input")
+        Log.d("Mathmode","string shown: $input")
 
         showRecognizedMath(input, strokes)
     }

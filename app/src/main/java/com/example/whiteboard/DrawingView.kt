@@ -222,11 +222,116 @@ class DrawingView @JvmOverloads constructor(
     // Selected strokes
     private val selectedStrokes = mutableListOf<Stroke>()
 
+    private var staticBitmap: Bitmap? = null
+    private var staticCanvas: Canvas? = null
+    private var staticValid: Boolean = false
+    private val staticDirtyRect = Rect()   // pixel-space dirty region
+    private var lastStrokesCount: Int = -1 // used to detect changes without wiring into all callers
+
+    private var isTransformingSelection: Boolean = false
+
+    private val staticExclusion = mutableSetOf<Stroke>() // strokes temporarily excluded from static layer while transforming
+
+    private fun allocateStaticLayer(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        staticBitmap?.recycle()
+        staticBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        staticCanvas = Canvas(staticBitmap!!)
+        staticCanvas?.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        staticValid = false
+        lastStrokesCount = -1
+    }
+
+    private fun requestStaticRebuild() {
+        // Mark the full view as dirty for the static layer and schedule redraw
+        staticValid = false
+        lastStrokesCount = -1
+        invalidate()
+    }
+
+    private fun rebuildStaticLayer() {
+        val w = width
+        val h = height
+        if (w <= 0 || h <= 0) return
+        if (staticBitmap == null || staticBitmap!!.width != w || staticBitmap!!.height != h) {
+            allocateStaticLayer(w, h)
+        }
+        staticCanvas?.let { sc ->
+            // Full clear then paint all non-live strokes
+            sc.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+
+            // IMPORTANT: draw only committed strokes; activePaths/currentPath remain "live"
+            clipRect.set(0, 0, w, h)
+            clipRectF.set(clipRect)
+            for (stroke in strokes) {
+                if (staticExclusion.contains(stroke)) continue  // <-- don't bake transforming strokes
+                val r = aabbOf(stroke)
+                if (!RectF.intersects(r, clipRectF)) continue
+                sc.drawPath(stroke.path, stroke.paint)
+            }
+            staticValid = true
+            lastStrokesCount = strokes.size
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        allocateStaticLayer(w, h)
+        // Rebuild once from current strokes (e.g., after rotation or first layout)
+        rebuildStaticLayer()
+        invalidate()
+    }
+
+
+
+    private fun commitStrokeToStatic(stroke: Stroke) {
+        // Draw a single stroke into the static layer and mark dirty area
+        if (staticCanvas == null || staticBitmap == null) {
+            allocateStaticLayer(width, height)
+        }
+        val sc = staticCanvas ?: return
+        val r = aabbOf(stroke)
+        sc.save()
+        try {
+            sc.clipRect(r)
+            sc.drawPath(stroke.path, stroke.paint)
+        } finally {
+            sc.restore()
+        }
+        // Invalidate just the affected region (expand by a few px for stroke caps/joins)
+        val pad = 6
+        staticDirtyRect.set(
+            (r.left - pad).toInt().coerceAtLeast(0),
+            (r.top - pad).toInt().coerceAtLeast(0),
+            (r.right + pad).toInt().coerceAtMost(width),
+            (r.bottom + pad).toInt().coerceAtMost(height)
+        )
+        invalidate(staticDirtyRect)
+        lastStrokesCount = strokes.size
+    }
+
 
     private fun copyStrokes(strokes: List<Stroke>): List<Stroke> {
         return strokes.map { stroke ->
             Stroke(Path(stroke.path), Paint(stroke.paint))
         }
+    }
+
+    private fun beginTransformingSelection() {
+        if (selectedStrokes.isEmpty()) return
+        isTransformingSelection = true
+        staticExclusion.clear()
+        staticExclusion.addAll(selectedStrokes) // exclude from static layer
+        rebuildStaticLayer()                    // rebuild without the selected strokes baked in
+        invalidate()
+    }
+
+    private fun endTransformingSelection() {
+        if (!isTransformingSelection) return
+        isTransformingSelection = false
+        staticExclusion.clear()                 // include them back
+        rebuildStaticLayer()                    // bake final geometry after transform
+        invalidate()
     }
 
 
@@ -509,6 +614,8 @@ class DrawingView @JvmOverloads constructor(
         // If you maintain a spatial index/hash, fully rebuild or clear+reindex
         rebuildSpatialIndex()
 
+        requestLayout()
+        rebuildStaticLayer()
         // 4) Final visual refresh
         invalidate()
     }
@@ -610,39 +717,47 @@ class DrawingView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // Current clip (screen) area
+        // Keep a local clip of what's visible on screen
         canvas.getClipBounds(clipRect)
         clipRectF.set(clipRect)
 
-        // Draw only strokes that intersect the clip rect (using cached AABBs)
-        for (stroke in strokes) {
-            val r = aabbOf(stroke)
-            if (!RectF.intersects(r, clipRectF)) continue
-            canvas.drawPath(stroke.path, stroke.paint)
+        // If strokes changed since last draw, rebuild the static layer once.
+        if (!staticValid || lastStrokesCount != strokes.size) {
+            rebuildStaticLayer()
         }
 
+        // 1) Draw cached static content (all committed strokes) in O(1)
+        staticBitmap?.let { bmp ->
+            canvas.drawBitmap(bmp, 0f, 0f, null)
+        }
+
+        // 2) Draw live/active strokes only (these are cheap and few)
         for ((_, path) in activePaths) {
             canvas.drawPath(path, currentPaint)
         }
-
-        // Current in-progress path
         currentPath?.let {
             canvas.drawPath(it, currentPaint)
         }
 
-        // Selection lasso/path
+        if (selectedStrokes.isNotEmpty()) {
+            // Draw transformed strokes live so they reflect current matrix updates instantly
+            for (stroke in selectedStrokes) {
+                val rSel = aabbOf(stroke)
+                if (!RectF.intersects(rSel, clipRectF)) continue
+                canvas.drawPath(stroke.path, stroke.paint)
+            }
+        }
+
+        // 3) Draw selection lasso / box / handles only when selection exists.
+        //    This avoids scanning all strokes during freehand drawing.
         selectionPath?.let { path ->
             canvas.drawPath(path, selectionPaint)
         }
 
-        // Selection box + handles and highlights (only if selection intersects screen)
         if (selectedStrokes.isNotEmpty()) {
             computeSelectionBounds()
             if (!selectionBounds.isEmpty && RectF.intersects(selectionBounds, clipRectF)) {
-                // Bounding box
                 canvas.drawRect(selectionBounds, selectionBoxPaint)
-
-                // Handles
                 for ((index, point) in handlePoints.withIndex()) {
                     if (index == handlePoints.size - 2) {
                         val halfSize = handleRadius
@@ -651,22 +766,20 @@ class DrawingView @JvmOverloads constructor(
                             point.x + halfSize, point.y + halfSize,
                             handlePaint
                         )
-                    }
-                    else if (index == handlePoints.size - 1){
+                    } else if (index == handlePoints.size - 1) {
                         val halfSize = handleRadius
                         canvas.drawRect(
                             point.x - halfSize, point.y - halfSize,
                             point.x + halfSize, point.y + halfSize,
                             copyhandlePaint
                         )
-                    }
-                    else {
+                    } else {
                         canvas.drawCircle(point.x, point.y, handleRadius, handlePaint)
                     }
                 }
             }
 
-            // Highlight only visible selected strokes
+            // Optional: highlight selected strokes (kept as-is; typically few)
             for (stroke in selectedStrokes) {
                 val rSel = aabbOf(stroke)
                 if (!RectF.intersects(rSel, clipRectF)) continue
@@ -674,11 +787,12 @@ class DrawingView @JvmOverloads constructor(
             }
         }
 
-        // Preview path (shapes)
+        // 4) Preview path (shapes)
         previewPath?.let {
             canvas.drawPath(it, previewPaint)
         }
     }
+
 
     private val regionClip = Region()
     private val regionTemp = Region()
@@ -864,6 +978,7 @@ class DrawingView @JvmOverloads constructor(
                         }
                         lastTouchX = x
                         lastTouchY = y
+                        beginTransformingSelection()
                         return
                     }
 
@@ -881,6 +996,7 @@ class DrawingView @JvmOverloads constructor(
                         // Start dragging selection
                         isDraggingSelection = true
                         transformMode = TransformMode.DRAG
+                        beginTransformingSelection()
                         lastTouchX = x
                         lastTouchY = y
                     }
@@ -978,7 +1094,7 @@ class DrawingView @JvmOverloads constructor(
                     }
                 }
             }
-            //im here
+
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (transformMode == TransformMode.NONE && !isDraggingSelection && selectionPath != null) {
                     if (indexDirty) {
@@ -1032,6 +1148,7 @@ class DrawingView @JvmOverloads constructor(
                         dirtyTransformStrokes.clear()
                     }
                 }
+                endTransformingSelection()
                 isDraggingSelection = false
                 activeHandleIndex = -1
                 transformMode = TransformMode.NONE
@@ -1043,6 +1160,7 @@ class DrawingView @JvmOverloads constructor(
         indexStroke(newStroke)
         aabbOf(newStroke)
         indexDirty = true
+        commitStrokeToStatic(newStroke)
     }
 
     fun undo() {
@@ -1176,6 +1294,7 @@ class DrawingView @JvmOverloads constructor(
             // If you have these helpers, keep them:
              aabbOf(s)                 // populate AABB cache
              indexStroke(s)            // add to spatial hash
+            commitStrokeToStatic(s)
             // If you only have one of them, call the one you use.
         }
 

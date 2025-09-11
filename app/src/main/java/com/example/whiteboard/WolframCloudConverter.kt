@@ -18,8 +18,9 @@ import java.net.URLEncoder
  *   Limit[Sin[x]/x, x -> 0]
  */
 class WolframCloudConverter(
-    private val apiUrl: String,
-    private val timeoutMs: Int = 12_000
+    private val texToWlUrl: String,
+    private val wlToTexUrl: String,
+    private val timeoutMs: Int = 14_000
 ) {
 
     /**
@@ -31,7 +32,7 @@ class WolframCloudConverter(
         if (latex.isEmpty()) return false to "Empty LaTeX input."
 
         return try {
-            val url = URL(apiUrl)
+            val url = URL(texToWlUrl)
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = timeoutMs
@@ -61,6 +62,43 @@ class WolframCloudConverter(
         } catch (e: Exception) {
             false to (e.message ?: "Network error")
         }
+    }
+
+    fun toTeXFromWolframLanguage(wlExpr: String?): Pair<Boolean, String> {
+        val wl = wlExpr?.trim().orEmpty()
+        if (wl.isEmpty()) return false to "Empty WL input."
+
+        return try {
+            val (code, raw) = httpFormPost(
+                urlStr = wlToTexUrl,
+                body = "wl=" + URLEncoder.encode(wl, "UTF-8")
+            )
+            if (code !in 200..299 || raw.isBlank()) {
+                false to "HTTP $code: ${raw.ifBlank { "No response body" }}"
+            } else {
+                true to raw.trim()
+            }
+        } catch (e: Exception) {
+            false to (e.message ?: "Network error")
+        }
+    }
+
+    private fun httpFormPost(urlStr: String, body: String): Pair<Int, String> {
+        val url = URL(urlStr)
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = timeoutMs
+            readTimeout = timeoutMs
+            doOutput = true
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        }
+        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
+
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val text = stream?.use { BufferedReader(InputStreamReader(it)).readText() } ?: ""
+        conn.disconnect()
+        return code to text
     }
 
     // --- helpers ---

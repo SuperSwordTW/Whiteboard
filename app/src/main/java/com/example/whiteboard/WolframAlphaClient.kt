@@ -57,12 +57,15 @@ class WolframAlphaClient(
      */
     fun queryFullResult(input: String): FullResult {
         val encoded = urlEncode(input)
-        val urlStr = "https://api.wolframalpha.com/v2/query?input=$encoded&appid=$appId&output=JSON&scantimeout=6&podtimeout=6&formattimeout=6"
+        val urlStr =
+            "https://api.wolframalpha.com/v2/query?input=$encoded&appid=$appId&output=JSON&scantimeout=6&podtimeout=6&formattimeout=6"
+
         return try {
             val (code, body) = httpGet(urlStr)
             if (code != 200 || body.isNullOrBlank()) {
                 return FullResult(false, null, null, "HTTP $code")
             }
+
             val json = JSONObject(body)
             val queryResult = json.optJSONObject("queryresult")
             val success = queryResult?.optBoolean("success") ?: false
@@ -70,29 +73,83 @@ class WolframAlphaClient(
                 return FullResult(false, null, null, "W|A did not succeed on this query.")
             }
 
-            // Find primary pod plaintext
+            val pods = queryResult.optJSONArray("pods")
+
+            // We will build:
+            // 1) primaryText: JOIN of ALL plaintexts in the primary pod (so multiple answers show up)
+            // 2) podsPreview: one line per pod (first plaintext if present)
             var primaryText: String? = null
             val podsPreviewLines = mutableListOf<String>()
-            val pods = queryResult?.optJSONArray("pods")
+
+            // Helper to collect every non-blank plaintext from a pod's subpods
+            fun collectSubpodPlaintexts(podObj: JSONObject): List<String> {
+                val subpods = podObj.optJSONArray("subpods") ?: return emptyList()
+                val out = ArrayList<String>(subpods.length())
+                for (j in 0 until subpods.length()) {
+                    val sp = subpods.optJSONObject(j) ?: continue
+                    val plain = sp.optString("plaintext").takeIf { !it.isNullOrBlank() } ?: continue
+                    out += plain
+                }
+                return out
+            }
+
             if (pods != null) {
+                // First pass: previews and find a primary pod
+                var primaryPodCollected = false
                 for (i in 0 until pods.length()) {
                     val pod = pods.optJSONObject(i) ?: continue
                     val title = pod.optString("title")
-                    val subpods = pod.optJSONArray("subpods")
-                    var firstPlain: String? = null
-                    if (subpods != null && subpods.length() > 0) {
-                        val sp0 = subpods.optJSONObject(0)
-                        firstPlain = sp0?.optString("plaintext")?.takeIf { it.isNotBlank() }
-                    }
+                    val plains = collectSubpodPlaintexts(pod)
 
-                    if (pod.optBoolean("primary") && primaryText == null) {
-                        primaryText = firstPlain ?: title
-                    }
-
-                    if (!firstPlain.isNullOrBlank()) {
-                        podsPreviewLines += "• $title: $firstPlain"
+                    // Build preview line (use first plaintext if available)
+                    if (plains.isNotEmpty()) {
+                        podsPreviewLines += "• $title: ${plains.first()}"
                     } else if (title.isNotBlank()) {
                         podsPreviewLines += "• $title"
+                    }
+
+                    // If this is the primary pod, join ALL non-blank plaintexts
+                    if (!primaryPodCollected && pod.optBoolean("primary")) {
+                        if (plains.isNotEmpty()) {
+                            // Join with newlines so multiple answers are visible to the caller
+                            primaryText = plains.joinToString(separator = ",")
+                        } else if (title.isNotBlank()) {
+                            primaryText = title
+                        }
+                        primaryPodCollected = true
+                    }
+                }
+
+                // Fallback: if no "primary" pod, try a reasonable default like "Result" / "Results"
+                if (primaryText.isNullOrBlank()) {
+                    // Look again for a pod titled "Result(s)"
+                    for (i in 0 until pods.length()) {
+                        val pod = pods.optJSONObject(i) ?: continue
+                        val title = pod.optString("title")
+                        if (title.equals("Result", ignoreCase = true) ||
+                            title.equals("Results", ignoreCase = true)
+                        ) {
+                            val plains = collectSubpodPlaintexts(pod)
+                            if (plains.isNotEmpty()) {
+                                primaryText = plains.joinToString(separator = ",")
+                                break
+                            } else if (title.isNotBlank()) {
+                                primaryText = title
+                                break
+                            }
+                        }
+                    }
+                }
+
+                // Final fallback: if still null/blank, try first pod with any plaintexts
+                if (primaryText.isNullOrBlank()) {
+                    for (i in 0 until pods.length()) {
+                        val pod = pods.optJSONObject(i) ?: continue
+                        val plains = collectSubpodPlaintexts(pod)
+                        if (plains.isNotEmpty()) {
+                            primaryText = plains.joinToString(separator = ",")
+                            break
+                        }
                     }
                 }
             }
