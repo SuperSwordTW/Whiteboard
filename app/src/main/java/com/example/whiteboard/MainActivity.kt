@@ -487,7 +487,7 @@ class MainActivity : AppCompatActivity() {
 
         Log.d("Mathmode", "showRecognizedMath called")
 
-        // Compute bounding box
+        // 1) Compute the drawing bounds so we can position the WebView near the ink.
         val bounds = RectF()
         val tmpRect = RectF()
         for (stroke in strokes) {
@@ -495,6 +495,7 @@ class MainActivity : AppCompatActivity() {
             bounds.union(tmpRect)
         }
 
+        // 2) Create a transparent WebView that will auto-size to the *rendered KaTeX content*.
         val webView = WebView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -502,17 +503,31 @@ class MainActivity : AppCompatActivity() {
             )
             settings.javaScriptEnabled = true
             setBackgroundColor(Color.TRANSPARENT)
-
             isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
         }
 
+        // 3) Color / expression
         val cleanLatex = latex.replace("\\\\", "\\")
         val katexExpression = "$$${cleanLatex}$$"
-
         val pencolor = "#${Integer.toHexString(drawingView.getPenColor()).substring(2)}"
 
+        // 4) Bridge: the page calls Android.onSize(wPx, hPx) *after* KaTeX finishes rendering.
+        //    We size the WebView to the actual rendered content in device pixels to avoid clipping.
+        webView.addJavascriptInterface(object {
+            @android.webkit.JavascriptInterface
+            fun onSize(wPx: Int, hPx: Int) {
+                runOnUiThread {
+                    val pad = (8 * resources.displayMetrics.density).toInt() // small breathing room
+                    val lp = FrameLayout.LayoutParams(wPx + pad, hPx + pad)
+                    webView.layoutParams = lp
+                }
+            }
+        }, "Android")
+
+        // 5) HTML: ensure KaTeX renders, then measure using getBoundingClientRect() and devicePixelRatio.
+        //    Also force wrapping (no cutoff) if the expression grows wide.
         val html = """
         <!DOCTYPE html>
         <html>
@@ -520,27 +535,76 @@ class MainActivity : AppCompatActivity() {
             <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
             <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
             <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
-            <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"
-                    onload="renderMathInElement(document.body);"></script>
+            <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
             <style>
-                body {
-                    margin:0;
-                    padding:0;
-                    background: transparent;
-                    display:inline-block;
-                    overflow:hidden;
+                html, body {
+                    margin: 0; padding: 0; background: transparent; overflow: hidden;
+                }
+                #wrap {
+                    display: inline-block;
+                    margin: 0; padding: 0;
+                    color: ${pencolor};
+                    /* Let long math wrap instead of overflowing */
+                    max-width: 100%;
+                    white-space: normal;
+                }
+                /* KaTeX default display math prevents wrapping; override to allow long lines */
+                .katex, .katex-display {
+                    white-space: normal !important;
                 }
                 #math-content {
-                    display:inline-block;
-                    margin:0;
-                    padding:0;
-                    color: $pencolor;
-                    font-size:60px;
+                    display: inline-block;
+                    font-size: 20px;
                 }
             </style>
         </head>
         <body>
-            <span id="math-content">$katexExpression</span>
+            <div id="wrap">
+                <span id="math-content">${katexExpression}</span>
+            </div>
+            <script>
+                (function() {
+                    function renderAndMeasure() {
+                        try {
+                            renderMathInElement(document.body, {
+                                delimiters: [{left: "$$", right: "$$", display: true}]
+                            });
+                        } catch (e) {}
+
+                        // Wait a frame for layout to settle, then measure.
+                        requestAnimationFrame(function() {
+                            var el = document.getElementById("math-content");
+                            if (!el) return;
+                            var rect = el.getBoundingClientRect();
+                            var dpr = window.devicePixelRatio || 1;
+                            var w = Math.ceil(rect.width * dpr);
+                            var h = Math.ceil(rect.height * dpr);
+                            if (window.Android && Android.onSize) {
+                                Android.onSize(w, h);
+                            }
+                        });
+                    }
+
+                    if (document.readyState === "complete") {
+                        renderAndMeasure();
+                    } else {
+                        window.addEventListener("load", renderAndMeasure);
+                    }
+
+                    // Re-measure if fonts load later or viewport metrics change.
+                    window.addEventListener("resize", function(){
+                        var el = document.getElementById("math-content");
+                        if (!el) return;
+                        var rect = el.getBoundingClientRect();
+                        var dpr = window.devicePixelRatio || 1;
+                        var w = Math.ceil(rect.width * dpr);
+                        var h = Math.ceil(rect.height * dpr);
+                        if (window.Android && Android.onSize) {
+                            Android.onSize(w, h);
+                        }
+                    });
+                })();
+            </script>
         </body>
         </html>
     """.trimIndent()
@@ -550,37 +614,13 @@ class MainActivity : AppCompatActivity() {
         val container: FrameLayout = findViewById(R.id.drawing_container)
         container.addView(webView)
 
-        // Adjust size to actual rendered content
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                webView.evaluateJavascript(
-                    """
-                (function() {
-                    var el = document.getElementById("math-content");
-                    return el.offsetWidth + "," + el.offsetHeight;
-                })();
-                """
-                ) { result ->
-                    val dims = result.replace("\"", "").split(",")
-                    if (dims.size == 2) {
-                        val w = dims[0].toIntOrNull() ?: 0
-                        val h = dims[1].toIntOrNull() ?: 0
-                        if (w > 0 && h > 0) {
-                            webView.layoutParams = FrameLayout.LayoutParams(w, h)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Position WebView
+        // 6) Position near the ink bounds (size will be set by the JS bridge above).
         webView.post {
             webView.x = bounds.left
             webView.y = bounds.top
         }
 
-        // Drag & long-press delete
+        // 7) Drag & long-press delete (unchanged).
         var dX = 0f
         var dY = 0f
         val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -588,7 +628,6 @@ class MainActivity : AppCompatActivity() {
                 container.removeView(webView)
             }
         })
-
         webView.setOnTouchListener { v, event ->
             gestureDetector.onTouchEvent(event)
             when (event.action) {
