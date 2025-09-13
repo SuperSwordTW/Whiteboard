@@ -38,6 +38,7 @@ import android.view.MotionEvent
 import android.view.GestureDetector
 import com.example.whiteboard.MathInputNormalizer
 import com.example.whiteboard.WolframCloudConverter
+import androidx.cardview.widget.CardView
 
 class MainActivity : AppCompatActivity() {
 
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var desmosWebView: WebView
 
+    private lateinit var desmosCard: CardView
     private var isDesmosVisible = false
 
     private var editorData: EditorData? = null
@@ -125,7 +127,7 @@ class MainActivity : AppCompatActivity() {
 
                 // Configure Math
                 editor.configuration.apply {
-                    setBoolean("math.solver.enable", false)
+                    setBoolean("math.solver.enable", true)
                     setString("math.configuration.bundle", "math")
                     setString("math.configuration.name", "standard")
                 }
@@ -144,11 +146,12 @@ class MainActivity : AppCompatActivity() {
 
 
         // Setting up desmos
-
+        desmosCard = findViewById(R.id.desmos_card)
         desmosWebView = findViewById(R.id.desmos_webview)
         val webSettings: WebSettings = desmosWebView.settings
         webSettings.javaScriptEnabled = true
         desmosWebView.webViewClient = WebViewClient()
+        desmosCard.visibility = View.GONE
 
         desmosWebView.loadUrl("https://www.desmos.com/calculator")
 
@@ -182,6 +185,7 @@ class MainActivity : AppCompatActivity() {
             """.trimIndent()
 
 
+
         desmosWebView.loadDataWithBaseURL(
             "https://www.desmos.com",
             desmosHtml,
@@ -212,9 +216,9 @@ class MainActivity : AppCompatActivity() {
 
 
 
-                    onRecognizedMath(latex, strokes)
+//                    onRecognizedMath(latex, strokes)
 
-//                    showRecognizedMath(result, strokes)
+                    showRecognizedMath(latex, strokes)
 
                 }
                 drawingView.setMathingMode(false)
@@ -280,12 +284,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         sendButton.setOnClickListener {
+            drawingView.commitAllActivePaths()
             drawingView.setSelectionMode(true)
             drawingView.setMathingMode(true)
             drawingView.setSendMathingMode()
         }
 
         shapeButton.setOnClickListener {
+            drawingView.commitAllActivePaths()
             val popupView = layoutInflater.inflate(R.layout.shape_palette, null)
             val popupWindow = PopupWindow(
                 popupView,
@@ -335,6 +341,8 @@ class MainActivity : AppCompatActivity() {
 
         desmosButton.setOnClickListener {
             isDesmosVisible = !isDesmosVisible
+            isDesmosVisible = desmosCard.visibility != View.VISIBLE
+            desmosCard.visibility = if (isDesmosVisible) View.VISIBLE else View.GONE
             desmosWebView.visibility = if (isDesmosVisible) View.VISIBLE else View.GONE
         }
 
@@ -343,10 +351,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         selectButton.setOnClickListener {
+            drawingView.commitAllActivePaths()
             drawingView.setSelectionMode(true)
         }
 
         mathButton.setOnClickListener {
+            drawingView.commitAllActivePaths()
             drawingView.setSelectionMode(true)
             drawingView.setMathingMode(true)
         }
@@ -369,23 +379,27 @@ class MainActivity : AppCompatActivity() {
 
             // Set click listeners for each color
             popupView.findViewById<View>(R.id.color_red).setOnClickListener {
-                drawingView.setPenColor(Color.RED)
+                drawingView.setPenColor("#FF5252".toColorInt())
                 popupWindow.dismiss()
             }
             popupView.findViewById<View>(R.id.color_violet).setOnClickListener {
-                drawingView.setPenColor("#8F67EB".toColorInt())
+                drawingView.setPenColor("#DF8EF2".toColorInt())
                 popupWindow.dismiss()
             }
             popupView.findViewById<View>(R.id.color_green).setOnClickListener {
-                drawingView.setPenColor(Color.GREEN)
+                drawingView.setPenColor("#B2FF59".toColorInt())
                 popupWindow.dismiss()
             }
             popupView.findViewById<View>(R.id.color_blue).setOnClickListener {
-                drawingView.setPenColor(Color.BLUE)
+                drawingView.setPenColor("#40C4FF".toColorInt())
                 popupWindow.dismiss()
             }
-            popupView.findViewById<View>(R.id.color_black).setOnClickListener {
-                drawingView.setPenColor(Color.BLACK)
+            popupView.findViewById<View>(R.id.color_orange).setOnClickListener {
+                drawingView.setPenColor("#FFAB40".toColorInt())
+                popupWindow.dismiss()
+            }
+            popupView.findViewById<View>(R.id.color_yellow).setOnClickListener {
+                drawingView.setPenColor("#FFFF00".toColorInt())
                 popupWindow.dismiss()
             }
             popupView.findViewById<View>(R.id.color_white).setOnClickListener {
@@ -394,66 +408,67 @@ class MainActivity : AppCompatActivity() {
             }
         }
         deleteButton.setOnClickListener {
-            drawingView.deleteSelected()
+            drawingView.setDeleteMode(true)
+//            drawingView.deleteSelected()
         }
     }
 
     private val tmpRect = RectF()
 
-    private val wolfram by lazy {
-        WolframAlphaClient(appId = "8GAVHGL5LL")
-    }
+//    private val wolfram by lazy {
+//        WolframAlphaClient(appId = "8GAVHGL5LL")
+//    }
+//
+//    private val wolframCloud by lazy {
+//        WolframCloudConverter(texToWlUrl = "https://www.wolframcloud.com/obj/linjustin0209/tex-to-wl", wlToTexUrl = "https://www.wolframcloud.com/obj/linjustin0209/wl-to-tex")
+//    }
 
-    private val wolframCloud by lazy {
-        WolframCloudConverter(texToWlUrl = "https://www.wolframcloud.com/obj/linjustin0209/tex-to-wl", wlToTexUrl = "https://www.wolframcloud.com/obj/linjustin0209/wl-to-tex")
-    }
-
-    // REPLACE the existing method in MainActivity with this version
-    fun onRecognizedMath(input: String?, strokes: List<Stroke>) {
-        var text = input?.trim()
-        if (text.isNullOrEmpty()) return
-
-        Log.d("Mathmode","Original string: $text")
-
-        var (okTeX, waInput) = wolframCloud.toWolframLanguageFromTeX(text)
-//        var waInput = MathInputNormalizer.convertAlignedBlocks(text)
-//        waInput = MathInputNormalizer.convertLatexMatricesToLists(text)
-
-
-        Log.d("Mathmode","converted string: $waInput")
-
-        if (waInput == "Failed") {
-            waInput = text
-        }
-
-
-//        val short = wolfram.queryShortAnswer(waInput)
-
-        val full = wolfram.queryFullResult(waInput)
-
-//        val displayText: String = if (short.ok && !short.text.isNullOrBlank()) {
-//            short.text
-//        } else {
-//            short.errorMessage?: "No result."
+    // DEPRECATED
+//    fun onRecognizedMath(input: String?, strokes: List<Stroke>) {
+//        var text = input?.trim()
+//        if (text.isNullOrEmpty()) return
+//
+//        Log.d("Mathmode","Original string: $text")
+//
+//        var (okTeX, waInput) = wolframCloud.toWolframLanguageFromTeX(text)
+////        var waInput = MathInputNormalizer.convertAlignedBlocks(text)
+////        waInput = MathInputNormalizer.convertLatexMatricesToLists(text)
+//
+//
+//        Log.d("Mathmode","converted string: $waInput")
+//
+//        if (waInput == "Failed") {
+//            waInput = text
 //        }
-
-        val displayText: String = if (full.ok && !full.primaryText.isNullOrBlank()) {
-            full.primaryText!!
-        } else {
-            full.errorMessage ?: "No result."
-        }
-
-//        val latex = MathInputNormalizer.plainToLatex(displayText)
-        var (oklatex,latex) = wolframCloud.toTeXFromWolframLanguage(displayText)
-        if (latex == "\\text{\$\\\$\$Failed}") {
-            latex = MathInputNormalizer.plainToLatex(displayText)
-        }
-        val input = concatLatex(text, latex)
-
-        Log.d("Mathmode","string shown: $input")
-
-        showRecognizedMath(input, strokes)
-    }
+//
+//
+////        val short = wolfram.queryShortAnswer(waInput)
+//
+//        val full = wolfram.queryFullResult(waInput)
+//
+////        val displayText: String = if (short.ok && !short.text.isNullOrBlank()) {
+////            short.text
+////        } else {
+////            short.errorMessage?: "No result."
+////        }
+//
+//        val displayText: String = if (full.ok && !full.primaryText.isNullOrBlank()) {
+//            full.primaryText!!
+//        } else {
+//            full.errorMessage ?: "No result."
+//        }
+//
+////        val latex = MathInputNormalizer.plainToLatex(displayText)
+//        var (oklatex,latex) = wolframCloud.toTeXFromWolframLanguage(displayText)
+//        if (latex == "\\text{\$\\\$\$Failed}") {
+//            latex = MathInputNormalizer.plainToLatex(displayText)
+//        }
+//        val input = concatLatex(text, latex)
+//
+//        Log.d("Mathmode","string shown: $input")
+//
+//        showRecognizedMath(input, strokes)
+//    }
 
     private fun concatLatex(base: String?, next: String?): String {
         val b = base?.trim().orEmpty()
@@ -463,16 +478,6 @@ class MainActivity : AppCompatActivity() {
 
         // Join with a space so things like "x=1" and "y=2" don't collide
         return "$b \\newline $n"
-    }
-
-
-    private fun showWolframResultDialog(query: String, resultText: String) {
-        val msg = "Query:\n$query\n\nResult:\n$resultText"
-        AlertDialog.Builder(this)
-            .setTitle("Wolfram|Alpha")
-            .setMessage(msg)
-            .setPositiveButton("OK", null)
-            .show()
     }
 
 
@@ -506,6 +511,8 @@ class MainActivity : AppCompatActivity() {
         val cleanLatex = latex.replace("\\\\", "\\")
         val katexExpression = "$$${cleanLatex}$$"
 
+        val pencolor = "#${Integer.toHexString(drawingView.getPenColor()).substring(2)}"
+
         val html = """
         <!DOCTYPE html>
         <html>
@@ -527,7 +534,7 @@ class MainActivity : AppCompatActivity() {
                     display:inline-block;
                     margin:0;
                     padding:0;
-                    color: white;
+                    color: $pencolor;
                     font-size:60px;
                 }
             </style>
@@ -660,10 +667,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
-            R.id.action_copy -> {
-                drawingView.copySelected()
-                true
-            }
             R.id.action_save -> {
                 if (currentFileName == null) {
                     showSaveDialog()

@@ -190,10 +190,14 @@ class DrawingView @JvmOverloads constructor(
     private val currentPaint = Paint().apply {
         color = 0xFFFFFFFF.toInt()
         isAntiAlias = true
-        strokeWidth = 10f
+        strokeWidth = 3f
         style = Paint.Style.STROKE
         strokeJoin = Paint.Join.ROUND
         strokeCap = Paint.Cap.ROUND
+    }
+
+    fun getPenColor(): Int {
+        return currentPaint.color
     }
 
     fun setPenColor(color: Int) {
@@ -211,6 +215,8 @@ class DrawingView @JvmOverloads constructor(
 
     // Selection mode flag
     private var isSelecting = false
+
+    private var isDeleting = false
 
     private var isMathing = false
 
@@ -714,6 +720,7 @@ class DrawingView @JvmOverloads constructor(
         return -1
     }
 
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
@@ -855,6 +862,36 @@ class DrawingView @JvmOverloads constructor(
         return false
     }
 
+    // Commits all in-progress finger paths as regular strokes so they become selectable/removable.
+    fun commitAllActivePaths() {
+        if (activePaths.isEmpty()) return
+
+        // Single undo snapshot for the whole batch
+        undoStack.add(copyStrokes(strokes))
+        redoStack.clear()
+        if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
+
+        // Finalize each active path with defensive copies
+        val it = activePaths.entries.iterator()
+        while (it.hasNext()) {
+            val (pointerId, path) = it.next()
+            if (!path.isEmpty) {
+                val pathCopy = Path(path)
+                val paintCopy = Paint(currentPaint) // defensive copy; avoid future width/color mutations
+                val newStroke = Stroke(pathCopy, paintCopy)
+                strokes.add(newStroke)
+                afteraddstroke(newStroke)
+            }
+            it.remove() // clear this pointer from the map
+        }
+
+        // Keep indices/caches correct
+        indexDirty = true
+        markSelectionBoundsDirty()
+        invalidate()
+    }
+
+
 
     private var shapeMode: ShapeType? = null
     private var shapeStartX = 0f
@@ -903,7 +940,7 @@ class DrawingView @JvmOverloads constructor(
                 redoStack.clear() // Clear redo history
                 // Finger finished — finalize stroke
                 activePaths[pointerId]?.let { path ->
-                    val newStroke = Stroke(path, currentPaint)
+                    val newStroke = Stroke(path, Paint(currentPaint))
                     strokes.add(newStroke)
                     afteraddstroke(newStroke)
 
@@ -1152,6 +1189,9 @@ class DrawingView @JvmOverloads constructor(
                 isDraggingSelection = false
                 activeHandleIndex = -1
                 transformMode = TransformMode.NONE
+                if (isDeleting){
+                    deleteSelected()
+                }
             }
         }
     }
@@ -1217,9 +1257,21 @@ class DrawingView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun setDeleteMode(selecting: Boolean){
+        isSelecting = selecting
+        isMathing = false
+        isDeleting = selecting
+        isSending = false
+        selectionPath = null
+        selectedStrokes.clear()
+        invalidate()
+    }
+
     fun setSelectionMode(selecting: Boolean) {
         isSelecting = selecting
         isMathing = false
+        isDeleting = false
+        isSending = false
         selectionPath = null
         selectedStrokes.clear()
         invalidate()
@@ -1231,12 +1283,15 @@ class DrawingView @JvmOverloads constructor(
         }
         setSelectionMode(selecting)
         isMathing = selecting
+        isDeleting = false
         isSending = false
         invalidate()
     }
 
     fun setSendMathingMode() {
         isSending = true
+        isDeleting = false
+        isMathing = true
         invalidate()
     }
 

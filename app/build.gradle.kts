@@ -59,4 +59,6 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.myscript:iink:4.1.3")
     api("com.myscript:iink:4.1.3")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.cardview:cardview:1.0.0")
 }

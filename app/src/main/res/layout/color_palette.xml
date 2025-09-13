@@ -37,11 +37,18 @@
         android:background="@drawable/color_circle_blue"/>
 
     <View
-        android:id="@+id/color_black"
+        android:id="@+id/color_orange"
         android:layout_width="32dp"
         android:layout_height="32dp"
         android:layout_margin="4dp"
-        android:background="@drawable/color_circle_black"/>
+        android:background="@drawable/color_circle_orange"/>
+
+    <View
+        android:id="@+id/color_yellow"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/color_circle_yellow"/>
 
     <View
         android:id="@+id/color_white"
