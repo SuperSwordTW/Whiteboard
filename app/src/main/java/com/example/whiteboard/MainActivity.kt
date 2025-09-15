@@ -55,6 +55,9 @@ import android.graphics.Path
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicReference
+
 
 
 class MainActivity : AppCompatActivity() {
@@ -974,7 +977,6 @@ class MainActivity : AppCompatActivity() {
         tvPageNumber.text = getString(R.string.page_number, currentPageIndex + 1, pages.size)
     }
 
-
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.main_menu, menu)
         return true
@@ -1069,17 +1071,129 @@ class MainActivity : AppCompatActivity() {
     private val autoSaveInterval = 5 * 60 * 1000L // 5 minutes
 // private val autoSaveInterval = 10 * 1000L // for testing
 
-    // Single-thread background executor to serialize disk writes
     private val saveExecutor = Executors.newSingleThreadExecutor()
-    // Prevent overlapping saves
     private val isSaving = AtomicBoolean(false)
+    private val AUTO_SERIALIZE_SAMPLE_STEP_PX = 6f
 
     // 3) ADD — snapshot helpers inside class MainActivity
-    private fun deepCopyStroke(s: Stroke): Stroke {
-        val p = android.graphics.Path(s.path)
-        val paint = android.graphics.Paint(s.paint) // preserves ARGB & width
-        return Stroke(p, paint)
+    private fun deepCopyStroke(s: Stroke): Stroke = Stroke(Path(s.path), Paint(s.paint))
+
+    private fun snapshotPageBlocking(index: Int): List<Stroke> {
+        val ref = AtomicReference<List<Stroke>>(emptyList())
+        val latch = CountDownLatch(1)
+        runOnUiThread {
+            val src: List<Stroke> = if (index == currentPageIndex) {
+                drawingView.getStrokes()
+            } else {
+                pages.getOrNull(index) ?: emptyList()
+            }
+            ref.set(src.map { deepCopyStroke(it) })
+            latch.countDown()
+        }
+        latch.await()
+        return ref.get()
     }
+
+    private fun getPageCountBlocking(): Int {
+        val ref = AtomicReference(0)
+        val latch = CountDownLatch(1)
+        runOnUiThread {
+            ref.set(pages.size)
+            latch.countDown()
+        }
+        latch.await()
+        return ref.get()
+    }
+
+    /** Streaming write of a single stroke with a custom sampling step (for autosave). */
+    private fun writeStroke(writer: JsonWriter, s: Stroke, sampleStep: Float) {
+        writer.beginObject()
+
+        // Paint
+        writer.name("color").value(s.paint.color)
+        writer.name("width").value(s.paint.strokeWidth.toDouble())
+        writer.name("alpha").value(s.paint.alpha)
+
+        // Geometry
+        writer.name("points")
+        writer.beginArray()
+        val pm = android.graphics.PathMeasure(s.path, false)
+        val pos = FloatArray(2)
+        var length = pm.length
+        while (true) {
+            var distance = 0f
+            while (distance <= length) {
+                pm.getPosTan(distance, pos, null)
+                writer.beginArray()
+                writer.value(pos[0].toDouble())
+                writer.value(pos[1].toDouble())
+                writer.endArray()
+                distance += sampleStep
+            }
+            if (length > 0f) {
+                pm.getPosTan(length, pos, null)
+                writer.beginArray()
+                writer.value(pos[0].toDouble())
+                writer.value(pos[1].toDouble())
+                writer.endArray()
+            }
+            if (!pm.nextContour()) break
+            length = pm.length
+        }
+        writer.endArray()
+
+        writer.endObject()
+    }
+
+    /** Page-by-page paged save (no giant snapshot). */
+    private fun saveToFilePaged(fileName: String, sampleStep: Float = AUTO_SERIALIZE_SAMPLE_STEP_PX): Boolean {
+        val safeName = if (fileName.endsWith(".json")) fileName else "$fileName.json"
+        val finalFile = java.io.File(filesDir, safeName)
+        val tmpFile = java.io.File(filesDir, "$safeName.tmp")
+
+        try {
+            tmpFile.outputStream().use { raw ->
+                GZIPOutputStream(BufferedOutputStream(raw)).use { gz ->
+                    JsonWriter(OutputStreamWriter(gz, Charsets.UTF_8)).use { writer ->
+                        writer.setIndent("") // compact
+                        writer.beginObject()
+                        writer.name("version").value(1)
+
+                        val pageCount = getPageCountBlocking()
+                        writer.name("pageCount").value(pageCount)
+                        writer.name("pages")
+                        writer.beginArray()
+
+                        for (i in 0 until pageCount) {
+                            // Clone ONE page on main, write it, then release it — keeps memory flat.
+                            val pageCopy: List<Stroke> = snapshotPageBlocking(i)
+
+                            writer.beginObject()
+                            writer.name("strokes")
+                            writer.beginArray()
+                            for (s in pageCopy) writeStroke(writer, s, sampleStep)
+                            writer.endArray()
+                            writer.endObject()
+                        }
+
+                        writer.endArray()
+                        writer.endObject()
+                    }
+                }
+            }
+
+            if (!tmpFile.renameTo(finalFile)) {
+                tmpFile.copyTo(finalFile, overwrite = true)
+                tmpFile.delete()
+            }
+            return true
+        } catch (e: Throwable) {
+            // Best effort cleanup on failure
+            runCatching { tmpFile.delete() }
+            throw e
+        }
+    }
+
 
     private fun snapshotAllPagesForSave(): List<List<Stroke>> {
         // Ensure current page is synced first (deep copy to break shared refs)
@@ -1095,43 +1209,37 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             val name = currentFileName
             if (name.isNullOrBlank()) {
-                // No file selected yet; try again later
                 autoSaveHandler.postDelayed(this, autoSaveInterval)
                 return
             }
 
-            // Take a snapshot on the MAIN thread (safe access to drawingView/pages)
-            val snapshot = snapshotAllPagesForSave()
-
-            // Submit to background executor; skip if a save is already in progress
             if (isSaving.compareAndSet(false, true)) {
                 saveExecutor.execute {
                     var ok = false
                     var err: String? = null
                     try {
-                        ok = saveToFileSnapshot(name, snapshot)
-                    } catch (e: Exception) {
-                        err = e.message
+                        ok = saveToFilePaged(name) // paged, low-memory, gzipped, streamed
+                    } catch (t: Throwable) {
+                        err = t.message ?: t.toString()
                     } finally {
                         isSaving.set(false)
                     }
 
-                    // Post result back to main thread for UI feedback
                     runOnUiThread {
-                        if (ok) {
-                            Toast.makeText(this@MainActivity, "Auto-saved $name", Toast.LENGTH_SHORT).show()
-                        } else {
-                            val msg = err ?: "Unknown error"
-                            Toast.makeText(this@MainActivity, "Auto-save failed: $msg", Toast.LENGTH_LONG).show()
+                        if (!isFinishing && !isDestroyed) {
+                            if (ok) {
+                                Toast.makeText(this@MainActivity, "Auto-saved $name", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(this@MainActivity, "Auto-save failed: ${err ?: "Unknown error"}", Toast.LENGTH_LONG).show()
+                            }
                         }
                     }
                 }
-            } // else: skip this cycle if still saving
-
-            // Schedule next auto-save
+            }
             autoSaveHandler.postDelayed(this, autoSaveInterval)
         }
     }
+
 
     // 5) ADD — streaming + gzip writer that saves from a provided snapshot (no UI state access)
     private fun saveToFileSnapshot(fileName: String, pagesSnapshot: List<List<Stroke>>): Boolean {
@@ -1203,6 +1311,7 @@ class MainActivity : AppCompatActivity() {
         contentPackage?.close()
         autoSaveHandler.removeCallbacksAndMessages(null)
         saveExecutor.shutdown()
+        saveExecutor.shutdownNow()
         super.onDestroy()
     }
 
