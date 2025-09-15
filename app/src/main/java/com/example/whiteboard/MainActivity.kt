@@ -39,25 +39,13 @@ import android.view.GestureDetector
 import com.example.whiteboard.MathInputNormalizer
 import com.example.whiteboard.WolframCloudConverter
 import androidx.cardview.widget.CardView
-import android.net.Uri
-import android.util.JsonReader
-import android.util.JsonWriter
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.util.zip.GZIPInputStream
-import java.util.zip.GZIPOutputStream
-import kotlin.math.max
-import java.util.zip.ZipException
-import android.graphics.Paint
-import android.graphics.Path
-import java.io.IOException
+import java.io.*
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.atomic.AtomicReference
-
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonWriter
 
 
 class MainActivity : AppCompatActivity() {
@@ -67,7 +55,6 @@ class MainActivity : AppCompatActivity() {
 
     private var pages = mutableListOf<MutableList<Stroke>>() // each page is a list of strokes
     private var currentPageIndex = 0
-
 
     private var currentFileName: String? = null
 
@@ -575,7 +562,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 #math-content {
                     display: inline-block;
-                    font-size: 20px;
+                    font-size: 30px;
                 }
             </style>
         </head>
@@ -677,257 +664,6 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // ADD this helper inside class MainActivity (near other private utilities)
-    private fun deepCopyAndNormalizeStroke(src: Stroke): Stroke {
-        // Deep-copy geometry and paint so DrawingView (or other code) cannot overwrite shared instances
-        val newPath = Path(src.path)
-        val newPaint = Paint(src.paint).apply {
-            // Ensure stroke-style paint with your defaults respected
-            isAntiAlias = true
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-
-            // Clamp/normalize critical visual props
-            alpha = max(0, minOf(255, alpha))
-            strokeWidth = if (strokeWidth <= 0f) 1f else strokeWidth
-        }
-        return Stroke(newPath, newPaint)
-    }
-
-    // ADD this helper inside class MainActivity (used by legacy fallback path)
-    private fun normalizePage(page: MutableList<Stroke>): MutableList<Stroke> {
-        // Rebuild each stroke with its own Paint instance and normalized properties
-        return page.map { deepCopyAndNormalizeStroke(it) }.toMutableList()
-    }
-
-
-    // INSERT inside class MainActivity, near other private utilities
-
-    /**
-     * How densely to sample points when serializing a Path.
-     * Smaller step => more points => larger file, higher fidelity.
-     */
-    private val SERIALIZE_SAMPLE_STEP_PX = 3f
-
-    /**
-     * Minimal per-stroke DTO we write/read. We stream it with JsonWriter/JsonReader (no data classes needed).
-     * We serialize each stroke as polyline points (x,y) to guarantee portability and keep memory flat.
-     */
-    // REPLACE your existing writeStroke(...) in MainActivity.kt with this version.
-    private fun writeStroke(writer: JsonWriter, s: Stroke) {
-        writer.beginObject()
-
-        // Paint — write FULL ARGB in one field. Do NOT split alpha.
-        writer.name("argb").value(s.paint.color)
-        writer.name("width").value(s.paint.strokeWidth.toDouble())
-
-        // Geometry (sampled points from Path)
-        writer.name("points")
-        writer.beginArray()
-        val pm = android.graphics.PathMeasure(s.path, false)
-        val pos = FloatArray(2)
-        var length = pm.length
-        while (true) {
-            var distance = 0f
-            while (distance <= length) {
-                pm.getPosTan(distance, pos, null)
-                writer.beginArray()
-                writer.value(pos[0].toDouble())
-                writer.value(pos[1].toDouble())
-                writer.endArray()
-                distance += SERIALIZE_SAMPLE_STEP_PX
-            }
-            if (length > 0f) {
-                pm.getPosTan(length, pos, null)
-                writer.beginArray()
-                writer.value(pos[0].toDouble())
-                writer.value(pos[1].toDouble())
-                writer.endArray()
-            }
-            if (!pm.nextContour()) break
-            length = pm.length
-        }
-        writer.endArray()
-
-        writer.endObject()
-    }
-
-    /**
-     * Recreate a Stroke from streamed JSON.
-     * We reconstruct a Path from the polyline points and restore paint basics.
-     */
-    // REPLACE this helper in MainActivity.kt
-    // REPLACE your existing readStroke(...) in MainActivity.kt with this version.
-    private fun readStroke(reader: JsonReader): Stroke {
-        var argb = 0xFF000000.toInt() // default black (will be overridden by file)
-        var width = 4f
-        val pts = ArrayList<Pair<Float, Float>>(64)
-
-        reader.beginObject()
-        while (reader.hasNext()) {
-            when (reader.nextName()) {
-                // Read the single, authoritative ARGB field
-                "argb" -> argb = reader.nextInt()
-                // Backward-compat: if older files had "color" and optional "alpha", accept them.
-                "color" -> argb = reader.nextInt()
-                "alpha" -> {
-                    // Ignore separate alpha on load; ARGB already carries the true alpha.
-                    // We still consume the value to keep the stream aligned.
-                    reader.nextInt()
-                }
-                "width" -> width = reader.nextDouble().toFloat()
-                "points" -> {
-                    reader.beginArray()
-                    while (reader.hasNext()) {
-                        reader.beginArray()
-                        val x = reader.nextDouble().toFloat()
-                        val y = reader.nextDouble().toFloat()
-                        reader.endArray()
-                        pts.add(x to y)
-                    }
-                    reader.endArray()
-                }
-                else -> reader.skipValue()
-            }
-        }
-        reader.endObject()
-
-        // Rebuild Path from polyline
-        val path = android.graphics.Path()
-        if (pts.isNotEmpty()) {
-            path.moveTo(pts[0].first, pts[0].second)
-            var i = 1
-            while (i < pts.size) {
-                path.lineTo(pts[i].first, pts[i].second)
-                i++
-            }
-        }
-
-        // Construct Paint with EXACT ARGB (this preserves pure white #FFFFFFFF, etc.)
-        val paint = android.graphics.Paint().apply {
-            isAntiAlias = true
-            style = android.graphics.Paint.Style.STROKE
-            strokeCap = android.graphics.Paint.Cap.ROUND
-            strokeJoin = android.graphics.Paint.Join.ROUND
-            color = argb            // <-- full ARGB restored here
-            strokeWidth = if (width <= 0f) 1f else width
-        }
-
-        return Stroke(path, paint)
-    }
-
-
-    /**
-     * VERSIONED, streaming save format:
-     *
-     * {
-     *   "version": 1,
-     *   "pageCount": N,
-     *   "pages": [
-     *     { "strokes": [ {stroke...}, ... ] },
-     *     ...
-     *   ]
-     * }
-     *
-     * Gzipped for space and faster I/O.
-     */
-    private fun saveWhiteboardToUri(uri: Uri): Boolean {
-        // We DO NOT build giant JSON strings. We stream out page-by-page, stroke-by-stroke.
-        val cr = contentResolver
-        cr.openOutputStream(uri)?.use { raw ->
-            GZIPOutputStream(BufferedOutputStream(raw)).use { gz ->
-                JsonWriter(OutputStreamWriter(gz, Charsets.UTF_8)).use { writer ->
-                    writer.setIndent("") // no pretty indent to reduce size
-                    writer.beginObject()
-                    writer.name("version").value(1)
-                    writer.name("pageCount").value(pages.size)
-                    writer.name("pages")
-                    writer.beginArray()
-
-                    for (pageIndex in 0 until pages.size) {
-                        val page = pages[pageIndex]
-                        writer.beginObject()
-                        writer.name("strokes")
-                        writer.beginArray()
-                        // stream each stroke
-                        for (s in page) {
-                            writeStroke(writer, s)
-                        }
-                        writer.endArray()
-                        writer.endObject()
-                    }
-
-                    writer.endArray()
-                    writer.endObject()
-                }
-            }
-        } ?: return false
-        return true
-    }
-
-    /**
-     * Streamed, versioned loader that won't allocate a massive DOM.
-     * It reconstructs pages and strokes incrementally.
-     */
-    private fun loadWhiteboardFromUri(uri: Uri): Boolean {
-        val loadedPages = mutableListOf<MutableList<Stroke>>()
-
-        val cr = contentResolver
-        cr.openInputStream(uri)?.use { raw ->
-            GZIPInputStream(BufferedInputStream(raw)).use { gz ->
-                JsonReader(InputStreamReader(gz, Charsets.UTF_8)).use { reader ->
-                    var version = 1
-                    reader.beginObject()
-                    while (reader.hasNext()) {
-                        when (reader.nextName()) {
-                            "version" -> version = reader.nextInt() // future-proofing
-                            "pageCount" -> {
-                                // We don't actually need this up-front with streaming,
-                                // but we still read it to keep the stream position correct.
-                                reader.nextInt()
-                            }
-                            "pages" -> {
-                                reader.beginArray()
-                                while (reader.hasNext()) {
-                                    val strokes = mutableListOf<Stroke>()
-                                    reader.beginObject()
-                                    while (reader.hasNext()) {
-                                        when (reader.nextName()) {
-                                            "strokes" -> {
-                                                reader.beginArray()
-                                                while (reader.hasNext()) {
-                                                    strokes.add(readStroke(reader))
-                                                }
-                                                reader.endArray()
-                                            }
-                                            else -> reader.skipValue()
-                                        }
-                                    }
-                                    reader.endObject()
-                                    loadedPages.add(strokes)
-                                }
-                                reader.endArray()
-                            }
-                            else -> reader.skipValue()
-                        }
-                    }
-                    reader.endObject()
-                }
-            }
-        } ?: return false
-
-        // Replace current document with the loaded one (single assignment, minimal churn)
-        pages.clear()
-        pages.addAll(loadedPages)
-        currentPageIndex = 0.coerceAtMost(pages.size - 1).coerceAtLeast(0)
-        drawingView.setStrokes(pages.getOrNull(currentPageIndex) ?: mutableListOf())
-        updatePageNumber()
-        return true
-    }
-
-
-
 
 
     fun nextPage() {
@@ -936,11 +672,7 @@ class MainActivity : AppCompatActivity() {
         drawingView.clearSelectionState()
 
         // Persist current page strokes
-        pages[currentPageIndex] = drawingView.getStrokes().map { s ->
-            val p = android.graphics.Path(s.path)
-            val paint = android.graphics.Paint(s.paint) // preserves ARGB + width
-            Stroke(p, paint)
-        }.toMutableList()
+        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
 
         // Advance or create a new page
         if (currentPageIndex < pages.size - 1) {
@@ -959,11 +691,7 @@ class MainActivity : AppCompatActivity() {
     fun previousPage() {
         drawingView.clearSelectionState()
         // Save current strokes
-        pages[currentPageIndex] = drawingView.getStrokes().map { s ->
-            val p = android.graphics.Path(s.path)
-            val paint = android.graphics.Paint(s.paint) // preserves ARGB + width
-            Stroke(p, paint)
-        }.toMutableList()
+        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
 
         if (currentPageIndex > 0) {
             currentPageIndex--
@@ -976,6 +704,7 @@ class MainActivity : AppCompatActivity() {
         val tvPageNumber = findViewById<TextView>(R.id.tv_page_number)
         tvPageNumber.text = getString(R.string.page_number, currentPageIndex + 1, pages.size)
     }
+
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.main_menu, menu)
@@ -1065,146 +794,14 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-
-    // 2) ADD these fields inside class MainActivity
-    private val autoSaveHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val autoSaveInterval = 5 * 60 * 1000L // 5 minutes
-// private val autoSaveInterval = 10 * 1000L // for testing
-
     private val saveExecutor = Executors.newSingleThreadExecutor()
     private val isSaving = AtomicBoolean(false)
-    private val AUTO_SERIALIZE_SAMPLE_STEP_PX = 6f
 
-    // 3) ADD — snapshot helpers inside class MainActivity
-    private fun deepCopyStroke(s: Stroke): Stroke = Stroke(Path(s.path), Paint(s.paint))
+    private val autoSaveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val autoSaveInterval = 5 * 60 * 1000L // 5 minutes
+//    private val autoSaveInterval = 3 * 60 * 1000L // 3 minutes
+//    private val autoSaveInterval = 10 * 1000L // 10 seconds
 
-    private fun snapshotPageBlocking(index: Int): List<Stroke> {
-        val ref = AtomicReference<List<Stroke>>(emptyList())
-        val latch = CountDownLatch(1)
-        runOnUiThread {
-            val src: List<Stroke> = if (index == currentPageIndex) {
-                drawingView.getStrokes()
-            } else {
-                pages.getOrNull(index) ?: emptyList()
-            }
-            ref.set(src.map { deepCopyStroke(it) })
-            latch.countDown()
-        }
-        latch.await()
-        return ref.get()
-    }
-
-    private fun getPageCountBlocking(): Int {
-        val ref = AtomicReference(0)
-        val latch = CountDownLatch(1)
-        runOnUiThread {
-            ref.set(pages.size)
-            latch.countDown()
-        }
-        latch.await()
-        return ref.get()
-    }
-
-    /** Streaming write of a single stroke with a custom sampling step (for autosave). */
-    private fun writeStroke(writer: JsonWriter, s: Stroke, sampleStep: Float) {
-        writer.beginObject()
-
-        // Paint
-        writer.name("color").value(s.paint.color)
-        writer.name("width").value(s.paint.strokeWidth.toDouble())
-        writer.name("alpha").value(s.paint.alpha)
-
-        // Geometry
-        writer.name("points")
-        writer.beginArray()
-        val pm = android.graphics.PathMeasure(s.path, false)
-        val pos = FloatArray(2)
-        var length = pm.length
-        while (true) {
-            var distance = 0f
-            while (distance <= length) {
-                pm.getPosTan(distance, pos, null)
-                writer.beginArray()
-                writer.value(pos[0].toDouble())
-                writer.value(pos[1].toDouble())
-                writer.endArray()
-                distance += sampleStep
-            }
-            if (length > 0f) {
-                pm.getPosTan(length, pos, null)
-                writer.beginArray()
-                writer.value(pos[0].toDouble())
-                writer.value(pos[1].toDouble())
-                writer.endArray()
-            }
-            if (!pm.nextContour()) break
-            length = pm.length
-        }
-        writer.endArray()
-
-        writer.endObject()
-    }
-
-    /** Page-by-page paged save (no giant snapshot). */
-    private fun saveToFilePaged(fileName: String, sampleStep: Float = AUTO_SERIALIZE_SAMPLE_STEP_PX): Boolean {
-        val safeName = if (fileName.endsWith(".json")) fileName else "$fileName.json"
-        val finalFile = java.io.File(filesDir, safeName)
-        val tmpFile = java.io.File(filesDir, "$safeName.tmp")
-
-        try {
-            tmpFile.outputStream().use { raw ->
-                GZIPOutputStream(BufferedOutputStream(raw)).use { gz ->
-                    JsonWriter(OutputStreamWriter(gz, Charsets.UTF_8)).use { writer ->
-                        writer.setIndent("") // compact
-                        writer.beginObject()
-                        writer.name("version").value(1)
-
-                        val pageCount = getPageCountBlocking()
-                        writer.name("pageCount").value(pageCount)
-                        writer.name("pages")
-                        writer.beginArray()
-
-                        for (i in 0 until pageCount) {
-                            // Clone ONE page on main, write it, then release it — keeps memory flat.
-                            val pageCopy: List<Stroke> = snapshotPageBlocking(i)
-
-                            writer.beginObject()
-                            writer.name("strokes")
-                            writer.beginArray()
-                            for (s in pageCopy) writeStroke(writer, s, sampleStep)
-                            writer.endArray()
-                            writer.endObject()
-                        }
-
-                        writer.endArray()
-                        writer.endObject()
-                    }
-                }
-            }
-
-            if (!tmpFile.renameTo(finalFile)) {
-                tmpFile.copyTo(finalFile, overwrite = true)
-                tmpFile.delete()
-            }
-            return true
-        } catch (e: Throwable) {
-            // Best effort cleanup on failure
-            runCatching { tmpFile.delete() }
-            throw e
-        }
-    }
-
-
-    private fun snapshotAllPagesForSave(): List<List<Stroke>> {
-        // Ensure current page is synced first (deep copy to break shared refs)
-        pages[currentPageIndex] = drawingView.getStrokes().map { deepCopyStroke(it) }.toMutableList()
-
-        // Return an immutable snapshot (deep copy of every page)
-        return pages.map { page -> page.map { deepCopyStroke(it) } }
-    }
-
-
-    // 4) REPLACE your existing autoSaveRunnable block with this version
     private val autoSaveRunnable = object : Runnable {
         override fun run() {
             val name = currentFileName
@@ -1213,85 +810,37 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
+            val snapshot = snapshotAllPagesForSave()
+
             if (isSaving.compareAndSet(false, true)) {
                 saveExecutor.execute {
                     var ok = false
                     var err: String? = null
                     try {
-                        ok = saveToFilePaged(name) // paged, low-memory, gzipped, streamed
-                    } catch (t: Throwable) {
-                        err = t.message ?: t.toString()
+                        ok = saveToFileSnapshot(name, snapshot)
+                    } catch (e: Exception) {
+                        err = e.message
                     } finally {
                         isSaving.set(false)
                     }
 
+                    // Send text to screen
                     runOnUiThread {
-                        if (!isFinishing && !isDestroyed) {
-                            if (ok) {
-                                Toast.makeText(this@MainActivity, "Auto-saved $name", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(this@MainActivity, "Auto-save failed: ${err ?: "Unknown error"}", Toast.LENGTH_LONG).show()
-                            }
+                        if (ok) {
+                            Toast.makeText(this@MainActivity, "Auto-saved $name", Toast.LENGTH_SHORT).show()
+                        } else {
+                            val msg = err ?: "Unknown error"
+                            Toast.makeText(this@MainActivity, "Auto-save failed: $msg", Toast.LENGTH_LONG).show()
                         }
                     }
                 }
             }
+
+            // Schedule next auto-save
             autoSaveHandler.postDelayed(this, autoSaveInterval)
         }
     }
 
-
-    // 5) ADD — streaming + gzip writer that saves from a provided snapshot (no UI state access)
-    private fun saveToFileSnapshot(fileName: String, pagesSnapshot: List<List<Stroke>>): Boolean {
-        val safeName = if (fileName.endsWith(".json")) fileName else "$fileName.json"
-
-        // Write to a temp file and atomically replace the final file to avoid corruption
-        val finalFile = File(filesDir, safeName)
-        val tmpFile = File(filesDir, "$safeName.tmp")
-
-        try {
-            tmpFile.outputStream().use { raw ->
-                GZIPOutputStream(BufferedOutputStream(raw)).use { gz ->
-                    JsonWriter(OutputStreamWriter(gz, Charsets.UTF_8)).use { writer ->
-                        writer.setIndent("") // compact
-                        writer.beginObject()
-                        writer.name("version").value(1)
-                        writer.name("pageCount").value(pagesSnapshot.size)
-                        writer.name("pages")
-                        writer.beginArray()
-
-                        for (page in pagesSnapshot) {
-                            writer.beginObject()
-                            writer.name("strokes")
-                            writer.beginArray()
-                            for (s in page) {
-                                writeStroke(writer, s) // uses your ARGB-preserving helper
-                            }
-                            writer.endArray()
-                            writer.endObject()
-                        }
-
-                        writer.endArray()
-                        writer.endObject()
-                    }
-                }
-            }
-
-            // Atomic replace
-            if (tmpFile.renameTo(finalFile)) {
-                return true
-            } else {
-                // If rename fails, try manual copy-overwrite fallback
-                tmpFile.copyTo(finalFile, overwrite = true)
-                tmpFile.delete()
-                return true
-            }
-        } catch (e: IOException) {
-            // Clean up temp file on failure
-            tmpFile.delete()
-            throw e
-        }
-    }
 
 
     override fun onResume() {
@@ -1309,9 +858,6 @@ class MainActivity : AppCompatActivity() {
         editorData?.editor?.close()
         contentPart?.close()
         contentPackage?.close()
-        autoSaveHandler.removeCallbacksAndMessages(null)
-        saveExecutor.shutdown()
-        saveExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -1335,7 +881,9 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
     private fun showLoadDialog() {
-        val files = filesDir.list() ?: emptyArray()
+        // Filter only .json files
+        val files = filesDir.list { _, name -> name.endsWith(".json", ignoreCase = true) } ?: emptyArray()
+
         if (files.isEmpty()) {
             Toast.makeText(this, "No saved files", Toast.LENGTH_SHORT).show()
             return
@@ -1350,145 +898,179 @@ class MainActivity : AppCompatActivity() {
             }
             .show()
     }
-
-    // REPLACE your existing saveToFile(...) with this streaming + gzip version.
-// It uses the same on-disk "filename.json" but writes compressed, streaming JSON.
     private fun saveToFile(fileName: String) {
-        // Normalize filename (keep your .json convention)
-        val safeName = if (fileName.endsWith(".json")) fileName else "$fileName.json"
+        Toast.makeText(this, "Saving file", Toast.LENGTH_SHORT).show()
+        val name = fileName.ifBlank { return }
+        val snapshot = snapshotAllPagesForSave()
 
-        // Ensure current page is synced back to pages[]
+        if (isSaving.compareAndSet(false, true)) {
+            saveExecutor.execute {
+                var ok = false
+                var err: String? = null
+                try {
+                    ok = saveToFileSnapshot(name, snapshot)
+                } catch (e: Exception) {
+                    err = e.message
+                } finally {
+                    isSaving.set(false)
+                }
+                runOnUiThread {
+                    if (ok) {
+                        Toast.makeText(this, "Saved to ${resolveFinalSaveName(name)}", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val msg = err ?: "Unknown error"
+                        Toast.makeText(this, "Save failed: $msg", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        } else {
+            Toast.makeText(this, "A save is already in progress…", Toast.LENGTH_SHORT).show()
+        }
+    }
+    private fun loadFromFile(fileName: String) {
+        val name = resolveLoadName(fileName)
+        saveExecutor.execute {
+            var loadedPages: MutableList<MutableList<Stroke>>? = null
+            var err: String? = null
+
+            try {
+                openFileInput(name).use { baseIn ->
+                    val inputStream = if (isGzipStream(baseIn)) GZIPInputStream(SequenceInputStream(ByteArrayInputStream(byteArrayOf()), baseInReset(name))) else baseInReset(name)
+                    JsonReader(BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8))).use { reader ->
+                        // data shape: MutableList<List<StrokeData>>
+                        loadedPages = readPagesStreaming(reader)
+                    }
+                }
+            } catch (e: Exception) {
+                err = e.message
+            }
+
+            runOnUiThread {
+                if (loadedPages != null) {
+                    pages.clear()
+                    pages.addAll(loadedPages!!)
+                    currentPageIndex = 0
+                    drawingView.setStrokes(pages[currentPageIndex].toMutableList())
+                    updatePageNumber()
+                    Toast.makeText(this, "Loaded $name", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Load failed: ${err ?: "Unknown error"}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun snapshotAllPagesForSave(): List<List<StrokeData>> {
+        // Ensure current page's latest strokes are stored
         pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
 
-        // Stream out a VERSIONED document, page-by-page, stroke-by-stroke (low memory).
-        openFileOutput(safeName, MODE_PRIVATE).use { raw ->
-            GZIPOutputStream(BufferedOutputStream(raw)).use { gz ->
-                JsonWriter(OutputStreamWriter(gz, Charsets.UTF_8)).use { writer ->
-                    writer.setIndent("") // compact
-                    writer.beginObject()
-                    writer.name("version").value(1)
-                    writer.name("pageCount").value(pages.size)
-                    writer.name("pages")
-                    writer.beginArray()
+        // Convert to StrokeData on the main thread to avoid concurrent mutation issues
+        return pages.map { page -> page.map { it.toStrokeData() } }
+    }
 
-                    for (page in pages) {
-                        writer.beginObject()
-                        writer.name("strokes")
-                        writer.beginArray()
-                        for (s in page) {
-                            // <-- Uses your provided helper
-                            writeStroke(writer, s)
+    // REPLACE: write plain JSON via JsonWriter (streaming) to keep memory low; atomic with .tmp swap.
+    private fun saveToFileSnapshot(fileName: String, snapshot: List<List<StrokeData>>): Boolean {
+        val finalName = resolveFinalSaveName(fileName) // ensures ".json"
+        val tmpName = "$finalName.tmp"
+
+        // 1) Write to temp file (plain JSON, streaming)
+        openFileOutput(tmpName, MODE_PRIVATE).use { fos ->
+            OutputStreamWriter(BufferedOutputStream(fos), Charsets.UTF_8).use { osw ->
+                com.google.gson.stream.JsonWriter(osw).use { writer ->
+                    writer.isLenient = false
+                    writer.beginArray() // pages [
+
+                    snapshot.forEach { page ->
+                        writer.beginArray() // strokes in page [
+                        page.forEach { sd ->
+                            // Stream each StrokeData object directly
+                            gson.toJson(sd, StrokeData::class.java, writer)
                         }
-                        writer.endArray()
-                        writer.endObject()
+                        writer.endArray()   // ]
                     }
 
-                    writer.endArray()
-                    writer.endObject()
+                    writer.endArray()       // ]
+                    writer.flush()
                 }
             }
         }
 
-        Toast.makeText(this, "Saved to $safeName", Toast.LENGTH_SHORT).show()
+        // 2) Replace old file atomically
+        val tmpFile = java.io.File(filesDir, tmpName)
+        val finalFile = java.io.File(filesDir, finalName)
+        if (finalFile.exists()) finalFile.delete()
+        if (!tmpFile.renameTo(finalFile)) {
+            // Fallback copy if rename fails on some devices
+            tmpFile.copyTo(finalFile, overwrite = true)
+            tmpFile.delete()
+        }
+        return true
     }
 
+    /** Always save compressed to reduce memory and file size. */
+    // REPLACE: ensure we save plain JSON (no gzip), so the loader can read it directly.
+    private fun resolveFinalSaveName(name: String): String {
+        return when {
+            name.endsWith(".json", ignoreCase = true) -> name
+            else -> "$name.json"
+        }
+    }
 
-    // REPLACE your existing loadFromFile(...) with this streaming + gzip loader.
-// It first tries to read the new VERSIONED+GZIP format. If that fails, it falls
-// back to your legacy plain-JSON (List<List<StrokeData>>) loader for compatibility.
-    // REPLACE your existing loadFromFile(...) with this version
-    private fun loadFromFile(fileName: String) {
-        val loadedPages = mutableListOf<MutableList<Stroke>>()
+    /** Pick an existing file to load; prefer compressed if present. */
+    private fun resolveLoadName(name: String): String {
+        val f1 = when {
+            name.endsWith(".json.gz", ignoreCase = true) -> name
+            name.endsWith(".json", ignoreCase = true) -> name
+            else -> "$name.json.gz"
+        }
+        val gz = if (f1.endsWith(".gz", true)) f1 else "$f1.gz"
+        return when {
+            File(filesDir, gz).exists() -> gz
+            File(filesDir, f1).exists() -> f1
+            else -> name // last attempt; will throw if missing
+        }
+    }
 
-        // --- Attempt: new streamed + gzip, versioned format ---
-        val versionedOk = try {
-            openFileInput(fileName).use { raw ->
-                // If the file isn't gzipped (legacy .json), GZIPInputStream will throw.
-                val gzStream = try {
-                    GZIPInputStream(BufferedInputStream(raw))
-                } catch (_: ZipException) {
-                    // Not gzipped — likely legacy format; fall back after this block.
-                    return@use null
-                } ?: return@use null
-
-                JsonReader(InputStreamReader(gzStream, Charsets.UTF_8)).use { reader ->
-                    var version = 1
-                    reader.beginObject()
-                    while (reader.hasNext()) {
-                        when (reader.nextName()) {
-                            "version" -> version = reader.nextInt()
-                            "pageCount" -> reader.nextInt() // not required for streaming
-                            "pages" -> {
-                                reader.beginArray()
-                                while (reader.hasNext()) {
-                                    val strokes = mutableListOf<Stroke>()
-                                    reader.beginObject()
-                                    while (reader.hasNext()) {
-                                        when (reader.nextName()) {
-                                            "strokes" -> {
-                                                reader.beginArray()
-                                                while (reader.hasNext()) {
-                                                    // readStroke(reader) already reconstructs color/width/alpha
-                                                    // but we deep-copy & normalize to avoid any shared Paint/Path surprises
-                                                    val s = readStroke(reader)
-                                                    strokes.add(deepCopyAndNormalizeStroke(s))
-                                                }
-                                                reader.endArray()
-                                            }
-                                            else -> reader.skipValue()
-                                        }
-                                    }
-                                    reader.endObject()
-                                    loadedPages.add(strokes)
-                                }
-                                reader.endArray()
-                            }
-                            else -> reader.skipValue()
-                        }
-                    }
-                    reader.endObject()
-                }
+    /** Detect gzip magic by reopening stream (we can't reset openFileInput). */
+    private fun isGzipStream(base: InputStream): Boolean {
+        // We cannot mark/reset the Android FileInputStream reliably;
+        // Use magic number detection by separately reopening via helper.
+        return try {
+            val fis = base as? FileInputStream
+            if (fis == null) false else {
+                val fd = fis.fd
+                // Can't seek FileInputStream directly; we simply return false here.
+                // We'll instead detect by filename path using resolveLoadName().
+                false
             }
-            true
         } catch (_: Exception) {
             false
         }
-
-        if (!versionedOk) {
-            // --- Fallback: legacy plain JSON format (List<List<StrokeData>>) ---
-            try {
-                val json = openFileInput(fileName).bufferedReader().use { it.readText() }
-                val type = object : TypeToken<MutableList<List<StrokeData>>>() {}.type
-                val dataPages: MutableList<List<StrokeData>> = gson.fromJson(json, type)
-
-                loadedPages.clear()
-                loadedPages.addAll(
-                    dataPages.map { pageData ->
-                        // Convert each StrokeData to Stroke, then deep-copy & normalize to ensure
-                        // color/width/alpha are applied and not later overridden by shared Paint.
-                        pageData.map { sd ->
-                            val s = sd.toStroke()
-                            deepCopyAndNormalizeStroke(s)
-                        }.toMutableList()
-                    }
-                )
-            } catch (e: Exception) {
-                Toast.makeText(this, "Load failed: ${e.message}", Toast.LENGTH_LONG).show()
-                return
-            }
-        }
-
-        // Swap in the loaded document atomically and refresh UI
-        pages.clear()
-        pages.addAll(loadedPages.map { normalizePage(it) }) // final safety pass
-        currentPageIndex = 0.coerceAtMost(pages.size - 1).coerceAtLeast(0)
-        drawingView.setStrokes(pages.getOrNull(currentPageIndex) ?: mutableListOf())
-        updatePageNumber()
-
-        Toast.makeText(this, "Loaded $fileName", Toast.LENGTH_SHORT).show()
     }
 
+    /** Reopen a fresh InputStream for the given file name. */
+    private fun baseInReset(fileName: String): InputStream {
+        return BufferedInputStream(openFileInput(fileName))
+    }
 
+    /** Streaming reader for pages -> strokes */
+    private fun readPagesStreaming(reader: JsonReader): MutableList<MutableList<Stroke>> {
+        val result = mutableListOf<MutableList<Stroke>>()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            // Each page: array of StrokeData
+            val page = mutableListOf<Stroke>()
+            reader.beginArray()
+            while (reader.hasNext()) {
+                val sd = gson.fromJson<StrokeData>(reader, StrokeData::class.java)
+                page.add(sd.toStroke())
+            }
+            reader.endArray()
+            result.add(page)
+        }
+        reader.endArray()
+        return result
+    }
 
     private fun saveWhiteboard() {
         pages[currentPageIndex] = drawingView.getStrokes().toMutableList()

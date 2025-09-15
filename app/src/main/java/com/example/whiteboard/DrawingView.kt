@@ -201,17 +201,22 @@ class DrawingView @JvmOverloads constructor(
     }
 
     fun setPenColor(color: Int) {
-        // If user has something selected, recolor it too
         if (selectedStrokes.isNotEmpty()) {
+            // Update the paint color on the selected strokes
             for (stroke in selectedStrokes) {
                 stroke.paint.color = color
             }
+            // The static layer still has the old color baked in.
+            // Force a full static layer rebuild so the new color persists after deselection.
+            requestStaticRebuild()
             invalidate()
         } else {
+            // No selection: just change the current drawing color for future strokes
             currentPaint.color = color
             invalidate()
         }
     }
+
 
     // Selection mode flag
     private var isSelecting = false
