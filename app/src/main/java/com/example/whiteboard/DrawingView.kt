@@ -605,26 +605,31 @@ class DrawingView @JvmOverloads constructor(
         invalidate()
     }
 
-    fun setStrokes(strokeList: List<Stroke>) {
-        // 1) Hard-reset selection/transform state so nothing from prior page lingers
-        clearSelectionState()
+    // REPLACE setStrokes(...) in DrawingView.kt
+    // REPLACE setStrokes(...) in DrawingView.kt
+    fun setStrokes(newStrokes: MutableList<Stroke>) {
+        // Deep-copy to avoid shared Path/Paint; preserve ARGB/width exactly
+        val copy = newStrokes.map { s ->
+            val p = android.graphics.Path(s.path)
+            val paint = android.graphics.Paint(s.paint)
+            Stroke(p, paint)
+        }
 
-        // 2) Replace stroke model
         strokes.clear()
-        strokes.addAll(strokeList)
+        strokes.addAll(copy)
 
-        // 3) Reset fast-path caches and spatial index entirely (no stale refs)
         strokeAabbs.clear()
+        indexDirty = true
+        rebuildSpatialIndex()
         for (s in strokes) aabbOf(s)
 
-        // If you maintain a spatial index/hash, fully rebuild or clear+reindex
-        rebuildSpatialIndex()
-
-        requestLayout()
-        rebuildStaticLayer()
-        // 4) Final visual refresh
+        dirtyTransformStrokes.clear()
+        selectedStrokes.clear()
+        selectionPath = null
+        markSelectionBoundsDirty()
         invalidate()
     }
+
 
     private val highlightPaint = Paint().apply {
         color = 0x66FF0000 // semi-transparent red
@@ -1203,44 +1208,74 @@ class DrawingView @JvmOverloads constructor(
         commitStrokeToStatic(newStroke)
     }
 
-    fun undo() {
-        if (undoStack.isNotEmpty()) {
-            redoStack.add(copyStrokes(strokes)) // Save current state to redo
-            val previous = undoStack.removeAt(undoStack.lastIndex)
-            strokes.clear()
-            strokes.addAll(copyStrokes(previous))
-            rebuildSpatialIndex()
-            strokeAabbs.clear()
-            for (s in strokes) aabbOf(s)
-            dirtyTransformStrokes.addAll(strokes)
-            markSelectionBoundsDirty()
-            selectedStrokes.clear()
-            indexDirty = true
-            selectionPath = null
-            invalidate()
-        }
+    // 1) ADD — helper: only index/draw strokes that can actually render
+    private fun isRenderable(s: Stroke): Boolean {
+        // Non-positive width or fully transparent paint → not drawn but could still be "hittable" if indexed.
+        if (s.paint.strokeWidth <= 0f) return false
+        if (s.paint.alpha <= 0) return false
+
+        // Empty/degenerate path → nothing to draw; also skip from indexing
+        val r = android.graphics.RectF()
+        s.path.computeBounds(r, true)
+        if (r.isEmpty) return false
+
+        return true
     }
+
+    // 2) ADD — helper: replace current stroke set and rebuild ALL derived state cleanly
+    private fun replaceAllStrokes(newStrokes: List<Stroke>) {
+        // Keep only strokes that would actually render to prevent "invisible but selectable" artifacts
+        val renderable = newStrokes.filter(::isRenderable)
+
+        // Swap list
+        strokes.clear()
+        strokes.addAll(renderable)
+
+        // Hard reset of caches/indices
+        strokeAabbs.clear()
+        indexDirty = true
+        rebuildSpatialIndex()
+        // Warm AABB cache for current strokes so selection math sees the fresh bounds only
+        for (s in strokes) aabbOf(s)
+
+        // Invalidate any transform/selection leftovers that could reference old Stroke instances
+        dirtyTransformStrokes.clear()
+        selectedStrokes.clear()
+        selectionPath = null
+        markSelectionBoundsDirty()
+
+        // Redraw
+        invalidate()
+    }
+
+
+    // 3) REPLACE — your undo() with this version
+    fun undo() {
+        if (undoStack.isEmpty()) return
+
+        // Push a deep copy of current state to redo
+        redoStack.add(copyStrokes(strokes))
+
+        // Pop the previous snapshot
+        val previous = undoStack.removeAt(undoStack.lastIndex)
+
+        // Replace everything in one shot and rebuild indices/caches from scratch
+        replaceAllStrokes(copyStrokes(previous))
+    }
+
 
     fun redo() {
-        if (redoStack.isNotEmpty()) {
-            undoStack.add(copyStrokes(strokes)) // Save current state to undo
-            val next = redoStack.removeAt(redoStack.lastIndex)
-            strokes.clear()
-            strokes.addAll(copyStrokes(next))
-            rebuildSpatialIndex()
-            strokeAabbs.clear()
-            for (s in strokes) aabbOf(s)
-            dirtyTransformStrokes.addAll(strokes)
-            markSelectionBoundsDirty()
-            selectedStrokes.clear()
-            indexDirty = true
-            selectionPath = null
-            invalidate()
-        }
+        if (redoStack.isEmpty()) return
+
+        // Save current state to undo (deep copy)
+        undoStack.add(copyStrokes(strokes))
+
+        // Restore next snapshot
+        val next = redoStack.removeAt(redoStack.lastIndex)
+
+        // Replace everything in one shot and rebuild indices/caches from scratch
+        replaceAllStrokes(copyStrokes(next))
     }
-
-
-
 
 
 
