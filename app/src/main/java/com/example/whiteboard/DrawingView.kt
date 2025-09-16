@@ -184,9 +184,65 @@ class DrawingView @JvmOverloads constructor(
         for (s in strokes) indexStroke(s)
     }
 
-    private val undoStack = mutableListOf<List<Stroke>>()
-    private val redoStack = mutableListOf<List<Stroke>>()
-    private val MAX_HISTORY = 50
+
+    private sealed class UndoOp {
+        /** Add: strokes inserted contiguously starting at [startIndex]. Keep references so redo can re-add. */
+        data class Add(val startIndex: Int, val strokes: List<Stroke>) : UndoOp()
+
+        /** Remove: arbitrary strokes removed together, each with its original index. */
+        data class Remove(val removed: List<Pair<Int, Stroke>>) : UndoOp()
+    }
+
+    private val undoOps = ArrayDeque<UndoOp>()
+    private val redoOps = ArrayDeque<UndoOp>()
+    private val MAX_HISTORY = 200
+
+    private fun pushUndo(op: UndoOp) {
+        undoOps.addLast(op)
+        // trim history
+        while (undoOps.size > MAX_HISTORY) undoOps.removeFirst()
+        // any new action wipes the redo stack
+        redoOps.clear()
+    }
+
+    private fun pushUndoNoClearRedo(op: UndoOp) {
+        undoOps.addLast(op)
+        while (undoOps.size > MAX_HISTORY) undoOps.removeFirst()
+    }
+
+    private fun applyRemoveOp(op: UndoOp.Remove, alsoIndex: Boolean) {
+        // Remove from highest index first to keep indices valid
+        op.removed.sortedByDescending { it.first }.forEach { (idx, s) ->
+            if (idx in 0..strokes.lastIndex && strokes[idx] === s) {
+                unindexStroke(s)
+                strokes.removeAt(idx)
+            } else {
+                // fallback if structure changed; try to remove by identity
+                val pos = strokes.indexOf(s)
+                if (pos >= 0) {
+                    unindexStroke(s)
+                    strokes.removeAt(pos)
+                }
+            }
+        }
+        markSelectionBoundsDirty()
+        requestStaticRebuild() // simplest & safe after arbitrary removals
+    }
+
+    private fun applyAddOp(op: UndoOp.Add) {
+        var insertAt = op.startIndex.coerceIn(0, strokes.size)
+        for (s in op.strokes) {
+            if (!strokes.contains(s)) {        // avoid accidental dupes
+                strokes.add(insertAt, s)
+                indexStroke(s)
+                commitStrokeToStatic(s)
+                insertAt++
+            }
+        }
+        markSelectionBoundsDirty()
+    }
+
+
     private val currentPaint = Paint().apply {
         color = 0xFFFFFFFF.toInt()
         isAntiAlias = true
@@ -261,6 +317,7 @@ class DrawingView @JvmOverloads constructor(
     }
 
     private fun rebuildStaticLayer() {
+        Log.d("Drawing","Rebuilding static layer")
         val w = width
         val h = height
         if (w <= 0 || h <= 0) return
@@ -318,6 +375,7 @@ class DrawingView @JvmOverloads constructor(
             (r.bottom + pad).toInt().coerceAtMost(height)
         )
         invalidate(staticDirtyRect)
+        staticValid = true
         lastStrokesCount = strokes.size
     }
 
@@ -340,8 +398,16 @@ class DrawingView @JvmOverloads constructor(
     private fun endTransformingSelection() {
         if (!isTransformingSelection) return
         isTransformingSelection = false
-        staticExclusion.clear()                 // include them back
-        rebuildStaticLayer()                    // bake final geometry after transform
+        // Union of final bounds of transformed strokes
+        val union = RectF()
+        var has = false
+        for (s in selectedStrokes) {
+            val r = aabbOf(s)
+            if (!has) { union.set(r); has = true } else union.union(r)
+            reindexStroke(s)
+        }
+        staticExclusion.clear()
+        if (has) repaintStaticRegion(union) else requestStaticRebuild()
         invalidate()
     }
 
@@ -546,16 +612,15 @@ class DrawingView @JvmOverloads constructor(
                     }
                     null -> {}
                 }
+                invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                undoStack.add(copyStrokes(strokes))
-                redoStack.clear() // Clear redo history
-                if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
                 // Commit shape as stroke
                 previewPath?.let {
                     val newStroke = Stroke(it, currentPaint)
                     strokes.add(newStroke)
                     afteraddstroke(newStroke)
+                    pushUndo(UndoOp.Add(strokes.size - 1, listOf(newStroke)))
                 }
                 previewPath = null
             }
@@ -632,6 +697,7 @@ class DrawingView @JvmOverloads constructor(
         selectedStrokes.clear()
         selectionPath = null
         markSelectionBoundsDirty()
+        requestStaticRebuild()
         invalidate()
     }
 
@@ -730,6 +796,41 @@ class DrawingView @JvmOverloads constructor(
         return -1
     }
 
+    private fun repaintStaticRegion(region: RectF) {
+        if (region.isEmpty) return
+        if (staticCanvas == null || staticBitmap == null) {
+            allocateStaticLayer(width, height)
+        }
+        val sc = staticCanvas ?: return
+
+        val clip = Rect(
+            floor(region.left).toInt().coerceAtLeast(0),
+            floor(region.top).toInt().coerceAtLeast(0),
+            ceil(region.right).toInt().coerceAtMost(width),
+            ceil(region.bottom).toInt().coerceAtMost(height)
+        )
+        if (clip.isEmpty) return
+
+        // Clear only the dirty rect
+        sc.save()
+        sc.clipRect(clip)
+        sc.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+
+        // Redraw only strokes intersecting this region
+        val rectF = RectF(clip)
+        val candidates = spatial.query(rectF)
+        for (stroke in candidates) {
+            val r = aabbOf(stroke)
+            if (!RectF.intersects(r, rectF)) continue
+            sc.drawPath(stroke.path, stroke.paint)
+        }
+        sc.restore()
+
+        invalidate(clip)
+        staticValid = true
+        lastStrokesCount = strokes.size
+    }
+
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -739,7 +840,7 @@ class DrawingView @JvmOverloads constructor(
         clipRectF.set(clipRect)
 
         // If strokes changed since last draw, rebuild the static layer once.
-        if (!staticValid || lastStrokesCount != strokes.size) {
+        if (!staticValid) {
             rebuildStaticLayer()
         }
 
@@ -876,23 +977,22 @@ class DrawingView @JvmOverloads constructor(
     fun commitAllActivePaths() {
         if (activePaths.isEmpty()) return
 
-        // Single undo snapshot for the whole batch
-        undoStack.add(copyStrokes(strokes))
-        redoStack.clear()
-        if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
-
-        // Finalize each active path with defensive copies
+        val batch = mutableListOf<Stroke>()
         val it = activePaths.entries.iterator()
         while (it.hasNext()) {
-            val (pointerId, path) = it.next()
+            val (_, path) = it.next()
             if (!path.isEmpty) {
                 val pathCopy = Path(path)
-                val paintCopy = Paint(currentPaint) // defensive copy; avoid future width/color mutations
+                val paintCopy = Paint(currentPaint)
                 val newStroke = Stroke(pathCopy, paintCopy)
                 strokes.add(newStroke)
                 afteraddstroke(newStroke)
+                batch.add(newStroke)
             }
-            it.remove() // clear this pointer from the map
+            it.remove()
+        }
+        if (batch.isNotEmpty()) {
+            pushUndo(UndoOp.Add(strokes.size - batch.size, batch.toList()))
         }
 
         // Keep indices/caches correct
@@ -921,6 +1021,10 @@ class DrawingView @JvmOverloads constructor(
 
     private val activePaths = mutableMapOf<Int, Path>()
 
+    private val lastPts = mutableMapOf<Int, PointF>()
+
+
+
     private fun handleMultiFingerDrawingTouch(event: MotionEvent) {
         val pointerIndex = event.actionIndex
         val pointerId = event.getPointerId(pointerIndex)
@@ -929,37 +1033,66 @@ class DrawingView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN,
             MotionEvent.ACTION_POINTER_DOWN -> {
                 // New finger starts drawing
-                val path = Path().apply {
-                    moveTo(event.getX(pointerIndex), event.getY(pointerIndex))
-                }
+                val sx = event.getX(pointerIndex)
+                val sy = event.getY(pointerIndex)
+                val path = Path().apply { moveTo(sx, sy) }
                 activePaths[pointerId] = path
+                lastPts[pointerId] = PointF(sx, sy)
+
+                // Ensure we see the initial dot immediately
+                val pad = (currentPaint.strokeWidth * 0.75f + 6f).toInt()
+                invalidate((sx - pad).toInt(), (sy - pad).toInt(), (sx + pad).toInt(), (sy + pad).toInt())
             }
 
             MotionEvent.ACTION_MOVE -> {
                 // Update all active fingers
                 for (i in 0 until event.pointerCount) {
                     val id = event.getPointerId(i)
-                    activePaths[id]?.lineTo(event.getX(i), event.getY(i))
+                    val px = event.getX(i)
+                    val py = event.getY(i)
+
+                    activePaths[id]?.let { p ->
+                        // Extend path
+                        p.lineTo(px, py)
+
+                        // Invalidate only the segment’s bounding box (+ pad for stroke caps/AA)
+                        val prev = lastPts[id]
+                        if (prev != null) {
+                            val left   = min(prev.x, px)
+                            val right  = max(prev.x, px)
+                            val top    = min(prev.y, py)
+                            val bottom = max(prev.y, py)
+                            val pad = (currentPaint.strokeWidth * 0.75f + 6f).toInt()
+                            invalidate(
+                                (left - pad).toInt(),
+                                (top - pad).toInt(),
+                                (right + pad).toInt(),
+                                (bottom + pad).toInt()
+                            )
+                            prev.set(px, py)
+                        } else {
+                            lastPts[id] = PointF(px, py)
+                        }
+                    }
                 }
             }
 
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_POINTER_UP,
             MotionEvent.ACTION_CANCEL -> {
-                undoStack.add(copyStrokes(strokes))
-                redoStack.clear() // Clear redo history
                 // Finger finished — finalize stroke
+
                 activePaths[pointerId]?.let { path ->
                     val newStroke = Stroke(path, Paint(currentPaint))
                     strokes.add(newStroke)
                     afteraddstroke(newStroke)
-
+                    pushUndo(UndoOp.Add(strokes.size - 1, listOf(newStroke)))
                 }
                 activePaths.remove(pointerId)
+                lastPts.remove(pointerId)
             }
         }
     }
-
 
     // For dragging selected strokes
     private var isDraggingSelection = false
@@ -1138,6 +1271,7 @@ class DrawingView @JvmOverloads constructor(
                     else -> {
                         // Continue drawing selection line
                         selectionPath?.lineTo(x, y)
+                        invalidate()
                     }
                 }
             }
@@ -1160,9 +1294,6 @@ class DrawingView @JvmOverloads constructor(
                         }
                         indexDirty = false
                     }
-                    undoStack.add(copyStrokes(strokes))
-                    redoStack.clear() // Clear redo history
-                    if (undoStack.size > MAX_HISTORY) undoStack.removeAt(0)
 
                     // Coarse: AABB query first, then precise path check
                     selectedStrokes.clear()
@@ -1248,38 +1379,75 @@ class DrawingView @JvmOverloads constructor(
         selectedStrokes.clear()
         selectionPath = null
         markSelectionBoundsDirty()
-
+        requestStaticRebuild()
         // Redraw
         invalidate()
     }
 
-
     // 3) REPLACE — your undo() with this version
     fun undo() {
-        if (undoStack.isEmpty()) return
+        if (undoOps.isEmpty()) return
+        val op = undoOps.removeLast()
+        when (op) {
+            is UndoOp.Add -> {
+                // Remove those exact strokes (by identity), wherever they currently are
+                var any = false
+                for (s in op.strokes.asReversed()) { // reverse so indices don't shift for earlier ones
+                    val idx = strokes.indexOf(s)
+                    if (idx >= 0) {
+                        unindexStroke(s)
+                        strokes.removeAt(idx)
+                        any = true
+                    }
+                }
+                if (any) {
+                    pushRedo(op) // redo will add them back
+                    markSelectionBoundsDirty()
+                    requestStaticRebuild()
+                    invalidate()
+                }
+            }
+            is UndoOp.Remove -> {
+                // Reinsert at original indices (ascending), shifting as we go
+                var insertOffset = 0
+                for ((idx, s) in op.removed.sortedBy { it.first }) {
+                    val insertAt = (idx + insertOffset).coerceIn(0, strokes.size)
+                    strokes.add(insertAt, s)
+                    indexStroke(s)
+                    commitStrokeToStatic(s)
+                    insertOffset++
+                }
+                pushRedo(op) // redo will remove them again
+                markSelectionBoundsDirty()
+                invalidate()
+            }
+        }
+    }
 
-        // Push a deep copy of current state to redo
-        redoStack.add(copyStrokes(strokes))
-
-        // Pop the previous snapshot
-        val previous = undoStack.removeAt(undoStack.lastIndex)
-
-        // Replace everything in one shot and rebuild indices/caches from scratch
-        replaceAllStrokes(copyStrokes(previous))
+    fun redo() {
+        if (redoOps.isEmpty()) return
+        val op = redoOps.removeLast()
+        when (op) {
+            is UndoOp.Add -> {
+                // Re-add the same strokes contiguously
+                applyAddOp(op)
+                // Push back onto undo without clearing redo stack
+                pushUndoNoClearRedo(op)
+                invalidate()
+            }
+            is UndoOp.Remove -> {
+                // Remove again
+                applyRemoveOp(op, alsoIndex = false)
+                // Push back onto undo without clearing redo stack
+                pushUndoNoClearRedo(op)
+                invalidate()
+            }
+        }
     }
 
 
-    fun redo() {
-        if (redoStack.isEmpty()) return
-
-        // Save current state to undo (deep copy)
-        undoStack.add(copyStrokes(strokes))
-
-        // Restore next snapshot
-        val next = redoStack.removeAt(redoStack.lastIndex)
-
-        // Replace everything in one shot and rebuild indices/caches from scratch
-        replaceAllStrokes(copyStrokes(next))
+    private fun pushRedo(op: UndoOp) {
+        redoOps.addLast(op)
     }
 
 
@@ -1350,16 +1518,29 @@ class DrawingView @JvmOverloads constructor(
 
     /** Delete selected strokes */
     fun deleteSelected() {
-        dirtyTransformStrokes.removeAll(selectedStrokes)
-        for (s in selectedStrokes) {
-            unindexStroke(s)
-            strokeAabbs.remove(s)
+        if (selectedStrokes.isEmpty()) return
+
+        // Capture original indices and strokes
+        val removed = mutableListOf<Pair<Int, Stroke>>()
+        selectedStrokes.forEach { s ->
+            val idx = strokes.indexOf(s)
+            if (idx >= 0) removed.add(idx to s)
         }
-        strokes.removeAll(selectedStrokes)
+
+        // Apply removal
+        removed.sortedByDescending { it.first }.forEach { (idx, s) ->
+            unindexStroke(s)
+            strokes.removeAt(idx)
+        }
+
+        // Record undo
+        if (removed.isNotEmpty()) pushUndo(UndoOp.Remove(removed))
+
         selectedStrokes.clear()
         indexDirty = true
         selectionPath = null
         markSelectionBoundsDirty()
+        requestStaticRebuild() // simplest & safe after arbitrary removals
         invalidate()
     }
 
@@ -1389,9 +1570,11 @@ class DrawingView @JvmOverloads constructor(
             // If you have these helpers, keep them:
              aabbOf(s)                 // populate AABB cache
              indexStroke(s)            // add to spatial hash
-            commitStrokeToStatic(s)
+             commitStrokeToStatic(s)
             // If you only have one of them, call the one you use.
         }
+
+        pushUndo(UndoOp.Add(strokes.size - newStrokes.size, newStrokes))
 
         // Make ONLY the copies selected
         selectedStrokes.clear()
