@@ -51,6 +51,18 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.MediaStore.MediaColumns
+import android.media.MediaScannerConnection
+import java.io.BufferedOutputStream
+import java.io.FileOutputStream
+import java.io.OutputStreamWriter
+import java.io.InputStream
+import java.io.BufferedInputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+
 
 
 class MainActivity : AppCompatActivity() {
@@ -79,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         autoSaveHandler.postDelayed(autoSaveRunnable, autoSaveInterval)
+        installCrashEmergencySaver()
 
 
         // Setting up myscript
@@ -689,12 +702,14 @@ class MainActivity : AppCompatActivity() {
 
         // Load target page strokes; setStrokes() already hard-resets selection + indices
         drawingView.setStrokes(pages[currentPageIndex])
-
+        drawingView.clearUndoOps()
         updatePageNumber()
     }
 
     fun previousPage() {
         drawingView.clearSelectionState()
+
+
         // Save current strokes
         pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
 
@@ -702,6 +717,7 @@ class MainActivity : AppCompatActivity() {
             currentPageIndex--
             drawingView.setStrokes(pages[currentPageIndex])
         }
+        drawingView.clearUndoOps()
         updatePageNumber()
     }
 
@@ -744,26 +760,106 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDeleteFileDialog() {
-        val files = filesDir.list() ?: emptyArray()   // 👈 no filter here
-        if (files.isEmpty()) {
+        // List files from the same public location where we save
+        val names: List<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = contentResolver
+            val projection = arrayOf(
+                MediaColumns.DISPLAY_NAME,
+                MediaColumns.RELATIVE_PATH,
+                MediaColumns.MIME_TYPE
+            )
+            val selection = "${MediaColumns.MIME_TYPE}=?"
+            val args = arrayOf("application/json")
+
+            val out = mutableListOf<String>()
+            resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                args,
+                "${MediaStore.Downloads.DATE_MODIFIED} DESC"
+            )?.use { cursor ->
+                val nameIdx = cursor.getColumnIndexOrThrow(MediaColumns.DISPLAY_NAME)
+                val relIdx  = cursor.getColumnIndexOrThrow(MediaColumns.RELATIVE_PATH)
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(nameIdx) ?: continue
+                    val rel  = cursor.getString(relIdx) ?: ""
+                    if (rel.contains("Documents/Whiteboard", ignoreCase = true)
+                        && name.endsWith(".json", ignoreCase = true)
+                    ) {
+                        out.add(name)
+                    }
+                }
+            }
+            out
+        } else {
+            // Pre-Q: list from public Documents/Whiteboard folder on disk
+            val dir = legacyPublicDir()
+            dir.listFiles { f -> f.isFile && f.extension.equals("json", ignoreCase = true) }
+                ?.sortedByDescending { it.lastModified() }
+                ?.map { it.name }
+                ?: emptyList()
+        }
+
+        if (names.isEmpty()) {
             Toast.makeText(this, "No saved files to delete", Toast.LENGTH_SHORT).show()
             return
         }
 
         AlertDialog.Builder(this)
             .setTitle("Delete Saved File")
-            .setItems(files) { _, which ->
-                val name = files[which]
+            .setItems(names.toTypedArray()) { _, which ->
+                val targetName = names[which]
+
                 AlertDialog.Builder(this)
                     .setTitle("Confirm Delete")
-                    .setMessage("Are you sure you want to delete $name?")
+                    .setMessage("Are you sure you want to delete $targetName?")
                     .setPositiveButton("Delete") { _, _ ->
-                        val file = File(filesDir, name)
-                        if (file.exists() && file.delete()) {
-                            Toast.makeText(this, "Deleted $name", Toast.LENGTH_SHORT).show()
-                            if (currentFileName == name) currentFileName = null
+                        var deleted = false
+
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            // Find the matching row in Downloads scoped to Documents/Whiteboard and delete it
+                            val resolver = contentResolver
+                            val projection = arrayOf(
+                                MediaColumns._ID,
+                                MediaColumns.DISPLAY_NAME,
+                                MediaColumns.RELATIVE_PATH
+                            )
+                            val selection = "${MediaColumns.DISPLAY_NAME}=?"
+                            val args = arrayOf(targetName)
+
+                            resolver.query(
+                                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                                projection,
+                                selection,
+                                args,
+                                null
+                            )?.use { cursor ->
+                                val idIdx = cursor.getColumnIndexOrThrow(MediaColumns._ID)
+                                val nameIdx = cursor.getColumnIndexOrThrow(MediaColumns.DISPLAY_NAME)
+                                val relIdx  = cursor.getColumnIndexOrThrow(MediaColumns.RELATIVE_PATH)
+                                while (cursor.moveToNext()) {
+                                    val name = cursor.getString(nameIdx) ?: continue
+                                    val rel  = cursor.getString(relIdx) ?: ""
+                                    if (name == targetName && rel.contains("Documents/Whiteboard", ignoreCase = true)) {
+                                        val id = cursor.getLong(idIdx)
+                                        val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString())
+                                        deleted = (resolver.delete(uri, null, null) > 0)
+                                        if (deleted) break
+                                    }
+                                }
+                            }
                         } else {
-                            Toast.makeText(this, "Failed to delete $name", Toast.LENGTH_SHORT).show()
+                            // Pre-Q: delete the physical file
+                            val f = File(legacyPublicDir(), targetName)
+                            deleted = f.exists() && f.delete()
+                        }
+
+                        if (deleted) {
+                            Toast.makeText(this, "Deleted $targetName", Toast.LENGTH_SHORT).show()
+                            if (currentFileName == targetName) currentFileName = null
+                        } else {
+                            Toast.makeText(this, "Failed to delete $targetName", Toast.LENGTH_SHORT).show()
                         }
                     }
                     .setNegativeButton("Cancel", null)
@@ -771,6 +867,7 @@ class MainActivity : AppCompatActivity() {
             }
             .show()
     }
+
 
     private fun deleteCurrentPage() {
         if (pages.isEmpty()) return
@@ -822,7 +919,13 @@ class MainActivity : AppCompatActivity() {
                     var ok = false
                     var err: String? = null
                     try {
-                        ok = saveToFileSnapshot(name, snapshot)
+                        try {
+                            saveToPublicSnapshot(name, snapshot)
+                            ok = true
+                        } catch (e: Exception) {
+                            err = e.message
+                            ok = false
+                        }
                     } catch (e: Exception) {
                         err = e.message
                     } finally {
@@ -866,6 +969,14 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    // INSERT: helper to get public Documents/Whiteboard directory on pre-Q devices
+    private fun legacyPublicDir(): File {
+        val base = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+        val dir = File(base, "Whiteboard")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
 
     private val gson = Gson()
     private val saveFileName = "whiteboard.json"
@@ -885,24 +996,255 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null)
             .show()
     }
+    // REPLACE: showLoadDialog() to enumerate files from public Documents/Whiteboard
     private fun showLoadDialog() {
-        // Filter only .json files
-        val files = filesDir.list { _, name -> name.endsWith(".json", ignoreCase = true) } ?: emptyArray()
-
-        if (files.isEmpty()) {
+        val names = listPublicJsonFiles()
+        if (names.isEmpty()) {
             Toast.makeText(this, "No saved files", Toast.LENGTH_SHORT).show()
             return
         }
 
         AlertDialog.Builder(this)
             .setTitle("Load Whiteboard")
-            .setItems(files) { _, which ->
-                val name = files[which]
-                loadFromFile(name)
+            .setItems(names.toTypedArray()) { _, which ->
+                val name = names[which]
+                loadFromFile(name)          // this will call openFromPublic(...) first
                 currentFileName = name
             }
             .show()
     }
+    // INSERT: generate a timestamped recovery file name, e.g., _recovery_2025-09-16_14-05-22.json
+    private fun makeRecoveryFileName(base: String? = currentFileName): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
+        val ts = sdf.format(Date())
+        val safe = resolveFinalSaveName(base ?: "whiteboard")
+        val bare = safe.removeSuffix(".json")
+        return "${bare}_recovery_$ts.json"
+    }
+
+    /**
+     * Synchronously save a best-effort recovery snapshot to public storage.
+     * - Avoids UI (no toasts).
+     * - Catches *all* throwables so it never throws from a crash path.
+     */
+    private fun saveEmergencyRecoverySync() {
+        try {
+            // 1) Ensure current page is reflected in pages[]
+            pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+
+            // 2) Build snapshot (List<List<StrokeData>>) right now
+            val snapshot = pages.map { page -> page.map { it.toStrokeData() } }
+
+            // 3) Use a distinctive, timestamped recovery name
+            val recoveryName = makeRecoveryFileName()
+
+            // 4) Write directly using the same public saver you already have
+            //    (This is synchronous; do NOT use background executors here.)
+            saveToPublicSnapshot(recoveryName, snapshot)
+
+            // Optionally remember it as the "current file" if you want to continue on next launch:
+            // currentFileName = recoveryName
+        } catch (_: Throwable) {
+            // swallow — never throw during crash handling
+        }
+    }
+
+    /**
+     * Install a default UncaughtExceptionHandler that writes a recovery file
+     * to Documents/Whiteboard *before* letting the app die.
+     */
+    private fun installCrashEmergencySaver() {
+        val prior = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
+            // Best effort: try to persist current work
+            saveEmergencyRecoverySync()
+
+            // Delegate to the previous handler so normal crash flow (logs/ANR dialogs) continues
+            try {
+                prior?.uncaughtException(thread, ex)
+            } catch (_: Throwable) {
+                // If prior handler itself fails, rethrow to kill the process
+                throw ex
+            }
+        }
+    }
+    // INSERT: below your existing helper methods (e.g., under readPagesStreaming)
+
+    private val PUBLIC_SUBDIR = Environment.DIRECTORY_DOCUMENTS + "/Whiteboard"
+
+    /**
+     * Save the given snapshot to public shared storage (Documents/Whiteboard) via MediaStore.
+     * Returns the Uri on success, or null on failure.
+     */
+    // REPLACE the entire method
+    // REPLACE the entire method
+    private fun saveToPublicSnapshot(fileName: String, snapshot: List<List<StrokeData>>): Uri {
+        val finalName = resolveFinalSaveName(fileName)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ : Use MediaStore with RELATIVE_PATH (no DATA required)
+            val resolver = contentResolver
+            val collectionUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val values = ContentValues().apply {
+                put(MediaColumns.DISPLAY_NAME, finalName)
+                put(MediaColumns.MIME_TYPE, "application/json")
+                put(MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/Whiteboard")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+
+            val uri = resolver.insert(collectionUri, values)
+                ?: throw IllegalStateException("MediaStore insert() returned null")
+
+            try {
+                resolver.openOutputStream(uri, "w")?.use { os ->
+                    OutputStreamWriter(BufferedOutputStream(os), Charsets.UTF_8).use { osw ->
+                        com.google.gson.stream.JsonWriter(osw).use { writer ->
+                            writer.isLenient = false
+                            writer.beginArray()
+                            snapshot.forEach { page ->
+                                writer.beginArray()
+                                page.forEach { sd -> gson.toJson(sd, StrokeData::class.java, writer) }
+                                writer.endArray()
+                            }
+                            writer.endArray()
+                            writer.flush()
+                        }
+                    }
+                } ?: throw IllegalStateException("openOutputStream() returned null")
+
+                val ready = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
+                resolver.update(uri, ready, null, null)
+                return uri
+            } catch (t: Throwable) {
+                try { resolver.delete(uri, null, null) } catch (_: Throwable) {}
+                throw t
+            }
+        } else {
+            // Android 9 and below: write directly into public Documents/Whiteboard with File APIs
+            // (Requires WRITE_EXTERNAL_STORAGE permission on API < 29)
+            val outFile = File(legacyPublicDir(), finalName)
+
+            FileOutputStream(outFile).use { fos ->
+                OutputStreamWriter(BufferedOutputStream(fos), Charsets.UTF_8).use { osw ->
+                    com.google.gson.stream.JsonWriter(osw).use { writer ->
+                        writer.isLenient = false
+                        writer.beginArray()
+                        snapshot.forEach { page ->
+                            writer.beginArray()
+                            page.forEach { sd -> gson.toJson(sd, StrokeData::class.java, writer) }
+                            writer.endArray()
+                        }
+                        writer.endArray()
+                        writer.flush()
+                    }
+                }
+            }
+
+            // Make it visible to file explorers immediately
+            MediaScannerConnection.scanFile(
+                this,
+                arrayOf(outFile.absolutePath),
+                arrayOf("application/json"),
+                null
+            )
+
+            return Uri.fromFile(outFile)
+        }
+    }
+
+    /**
+     * Try to open a file saved to public shared storage (Documents/Whiteboard).
+     * Returns an InputStream or null if not found.
+     */
+    // REPLACE the entire method
+    // REPLACE the entire method
+    private fun openFromPublic(fileName: String): InputStream? {
+        val finalName = resolveFinalSaveName(fileName)
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Query MediaStore (Downloads) on Android 10+
+            val resolver = contentResolver
+            val projection = arrayOf(
+                MediaColumns._ID,
+                MediaColumns.DISPLAY_NAME,
+                MediaColumns.RELATIVE_PATH
+            )
+            val selection = "${MediaColumns.DISPLAY_NAME}=?"
+            val args = arrayOf(finalName)
+
+            resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                args,
+                "${MediaStore.Downloads.DATE_MODIFIED} DESC"
+            )?.use { cursor ->
+                val idIdx = cursor.getColumnIndexOrThrow(MediaColumns._ID)
+                val nameIdx = cursor.getColumnIndexOrThrow(MediaColumns.DISPLAY_NAME)
+                val relIdx = cursor.getColumnIndexOrThrow(MediaColumns.RELATIVE_PATH)
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(nameIdx) ?: continue
+                    val rel = cursor.getString(relIdx) ?: ""
+                    if (name == finalName && rel.contains("Documents/Whiteboard")) {
+                        val id = cursor.getLong(idIdx)
+                        val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString())
+                        return contentResolver.openInputStream(uri)
+                    }
+                }
+                null
+            }
+        } else {
+            // Direct file path on pre-Q
+            val f = File(legacyPublicDir(), finalName)
+            if (f.exists() && f.isFile) BufferedInputStream(f.inputStream()) else null
+        }
+    }
+
+    // INSERT: lists all *.json saved files in public Documents/Whiteboard
+    private fun listPublicJsonFiles(): List<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = contentResolver
+            val projection = arrayOf(
+                MediaColumns.DISPLAY_NAME,
+                MediaColumns.RELATIVE_PATH,
+                MediaColumns.MIME_TYPE
+            )
+            // Filter by MIME to keep the cursor small; we still check path & extension below.
+            val selection = "${MediaColumns.MIME_TYPE}=?"
+            val args = arrayOf("application/json")
+
+            val out = mutableListOf<String>()
+            resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                args,
+                "${MediaStore.Downloads.DATE_MODIFIED} DESC"
+            )?.use { cursor ->
+                val nameIdx = cursor.getColumnIndexOrThrow(MediaColumns.DISPLAY_NAME)
+                val relIdx  = cursor.getColumnIndexOrThrow(MediaColumns.RELATIVE_PATH)
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(nameIdx) ?: continue
+                    val rel  = cursor.getString(relIdx) ?: ""
+                    if (rel.contains("Documents/Whiteboard", ignoreCase = true)
+                        && name.endsWith(".json", ignoreCase = true)
+                    ) {
+                        out.add(name)
+                    }
+                }
+            }
+            out
+        } else {
+            // Pre-Q: directly read from the public directory on disk
+            val dir = legacyPublicDir()
+            dir.listFiles { f -> f.isFile && f.extension.equals("json", ignoreCase = true) }
+                ?.sortedByDescending { it.lastModified() }
+                ?.map { it.name }
+                ?: emptyList()
+        }
+    }
+
+
     private fun saveToFile(fileName: String) {
         Toast.makeText(this, "Saving file", Toast.LENGTH_SHORT).show()
         val name = fileName.ifBlank { return }
@@ -913,7 +1255,13 @@ class MainActivity : AppCompatActivity() {
                 var ok = false
                 var err: String? = null
                 try {
-                    ok = saveToFileSnapshot(name, snapshot)
+                    try {
+                        saveToPublicSnapshot(name, snapshot)
+                        ok = true
+                    } catch (e: Exception) {
+                        err = e.message
+                        ok = false
+                    }
                 } catch (e: Exception) {
                     err = e.message
                 } finally {
@@ -921,7 +1269,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 runOnUiThread {
                     if (ok) {
-                        Toast.makeText(this, "Saved to ${resolveFinalSaveName(name)}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this,
+                            "Saved to Documents/Whiteboard/${resolveFinalSaveName(name)}",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     } else {
                         val msg = err ?: "Unknown error"
                         Toast.makeText(this, "Save failed: $msg", Toast.LENGTH_LONG).show()
@@ -932,18 +1284,30 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "A save is already in progress…", Toast.LENGTH_SHORT).show()
         }
     }
+    // REPLACE the entire loadFromFile(fileName) with this version
     private fun loadFromFile(fileName: String) {
-        val name = resolveLoadName(fileName)
+        val name = resolveFinalSaveName(fileName)
+
         saveExecutor.execute {
             var loadedPages: MutableList<MutableList<Stroke>>? = null
             var err: String? = null
 
             try {
-                openFileInput(name).use { baseIn ->
-                    val inputStream = if (isGzipStream(baseIn)) GZIPInputStream(SequenceInputStream(ByteArrayInputStream(byteArrayOf()), baseInReset(name))) else baseInReset(name)
-                    JsonReader(BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8))).use { reader ->
-                        // data shape: MutableList<List<StrokeData>>
-                        loadedPages = readPagesStreaming(reader)
+                // 1) Try public shared storage first
+                val publicIn = openFromPublic(name)
+                if (publicIn != null) {
+                    publicIn.use { input ->
+                        JsonReader(BufferedReader(InputStreamReader(input, Charsets.UTF_8))).use { reader ->
+                            loadedPages = readPagesStreaming(reader)
+                        }
+                    }
+                } else {
+                    // 2) Fallback to your existing internal files dir (legacy saves)
+                    val resolved = resolveLoadName(name)
+                    openFileInput(resolved).use { baseIn ->
+                        JsonReader(BufferedReader(InputStreamReader(baseIn, Charsets.UTF_8))).use { reader ->
+                            loadedPages = readPagesStreaming(reader)
+                        }
                     }
                 }
             } catch (e: Exception) {

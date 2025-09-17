@@ -1503,6 +1503,11 @@ class DrawingView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun clearUndoOps(){
+        undoOps.clear()
+        redoOps.clear()
+    }
+
     /** Move selected strokes by dx, dy */
     fun moveSelected(dx: Float, dy: Float) {
         val matrix = Matrix()
