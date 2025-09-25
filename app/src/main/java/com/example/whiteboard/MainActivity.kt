@@ -650,8 +650,9 @@ class MainActivity : AppCompatActivity() {
         var dX = 0f
         var dY = 0f
         val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onLongPress(e: MotionEvent) {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
                 container.removeView(webView)
+                return true
             }
         })
         webView.setOnTouchListener { v, event ->
