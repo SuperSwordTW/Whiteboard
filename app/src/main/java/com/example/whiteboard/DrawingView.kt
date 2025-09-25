@@ -586,6 +586,15 @@ class DrawingView @JvmOverloads constructor(
                             lineTo(x2, y2)
                         }
                     }
+                    ShapeType.DOTTED -> {
+                        previewPath?.reset()
+                        val ox = shapeStartX
+                        val oy = shapeStartY
+                        previewPath?.apply {
+                            moveTo(ox, oy)
+                            lineTo(event.x, event.y)
+                        }
+                    }
                     ShapeType.PARABOLA -> {
                         previewPath?.reset()
 
@@ -617,7 +626,17 @@ class DrawingView @JvmOverloads constructor(
             MotionEvent.ACTION_UP -> {
                 // Commit shape as stroke
                 previewPath?.let {
-                    val newStroke = Stroke(it, currentPaint)
+                    val paint = if (shapeMode == ShapeType.DOTTED) {
+                        Paint(currentPaint).apply {
+                            val sw = strokeWidth
+                            val dash = sw * 5f
+                            val gap = sw * 3f
+                            pathEffect = DashPathEffect(floatArrayOf(dash, gap), 0f)
+                        }
+                    } else {
+                        Paint(currentPaint)
+                    }
+                    val newStroke = Stroke(it, paint)
                     strokes.add(newStroke)
                     afteraddstroke(newStroke)
                     pushUndo(UndoOp.Add(strokes.size - 1, listOf(newStroke)))

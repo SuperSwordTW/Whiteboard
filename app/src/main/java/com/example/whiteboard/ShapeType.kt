@@ -9,6 +9,7 @@ enum class ShapeType {
     SEGMENT,
     RAY,
     SPHERE,
-    PARABOLA
+    PARABOLA,
+    DOTTED
     // Add more shapes here easily
 }

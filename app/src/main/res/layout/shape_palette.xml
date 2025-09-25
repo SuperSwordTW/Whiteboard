@@ -56,6 +56,13 @@
         android:background="@drawable/ic_ray"/>
 
     <View
+        android:id="@+id/shape_dotted"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_margin="4dp"
+        android:background="@drawable/ic_dotted"/>
+
+    <View
         android:id="@+id/shape_sphere"
         android:layout_width="32dp"
         android:layout_height="32dp"
