@@ -61,7 +61,6 @@
         <RelativeLayout
             android:layout_width="match_parent"
             android:layout_height="match_parent">
-
             <!-- Centered tool buttons -->
             <LinearLayout
                 android:id="@+id/toolbar_center_group"

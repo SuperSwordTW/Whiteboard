@@ -198,7 +198,6 @@ class MainActivity : AppCompatActivity() {
         webSettings.javaScriptEnabled = true
         desmosWebView.webViewClient = WebViewClient()
         desmosCard.visibility = View.GONE
-
         desmosWebView.loadUrl("https://www.desmos.com/calculator")
 
         val desmosHtml = """
@@ -792,6 +791,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyThemeColors(bgColor: Int, toolbarColor: Int) {
+
+        container_color = bgColor.toHexColorString()
+        toolbar_color = toolbarColor.toHexColorString()
+        card_color = bgColor.darken(0.8f).toHexColorString()
+        // Surfaces
+        val workspace = findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.workspace_row)
+        val container = findViewById<FrameLayout>(R.id.drawing_container)
+        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+
+        workspace.setBackgroundColor(bgColor)
+        container.setBackgroundColor(bgColor)
+        toolbar.setBackgroundColor(toolbarColor)
+
+        // Desmos card + its WebView
+        val hex = bgColor.toHexColorString()
+        desmosCard.setCardBackgroundColor(bgColor)
+        desmosWebView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+    }
+
 
     @OptIn(ExperimentalStdlibApi::class)
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -813,27 +832,25 @@ class MainActivity : AppCompatActivity() {
                 val bgColors = resources.obtainTypedArray(R.array.theme_bg_colors)
                 val tbColors = resources.obtainTypedArray(R.array.theme_tb_colors)
 
-                val bgArray = IntArray(names.size) { i -> bgColors.getColor(i, Color.WHITE) }
-                val tbArray = IntArray(names.size) { i -> tbColors.getColor(i, Color.LTGRAY) }
+                val bgArray = IntArray(names.size) { i -> bgColors.getColor(i, android.graphics.Color.WHITE) }
+                val tbArray = IntArray(names.size) { i -> tbColors.getColor(i, android.graphics.Color.LTGRAY) }
 
-                val adapter = ThemeAdapter(this, names, bgArray)
+                val adapter = object : android.widget.BaseAdapter() {
+                    override fun getCount() = names.size
+                    override fun getItem(position: Int) = names[position]
+                    override fun getItemId(position: Int) = position.toLong()
+                    override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                        val v = convertView ?: layoutInflater.inflate(R.layout.item_theme_preview, parent, false)
+                        v.findViewById<View>(R.id.bg_preview).setBackgroundColor(bgArray[position])
+                        v.findViewById<TextView>(R.id.theme_name).text = names[position]
+                        return v
+                    }
+                }
 
                 AlertDialog.Builder(this)
                     .setTitle("Choose Theme")
                     .setAdapter(adapter) { _, which ->
-                        val pickedBg = bgArray[which]
-                        val pickedTb = tbArray[which]
-
-                        val container = findViewById<FrameLayout>(R.id.drawing_container)
-                        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
-
-                        container_color = pickedBg.toHexColorString()
-                        toolbar_color = pickedTb.toHexColorString()
-                        card_color = pickedBg.darken(0.8f).toHexColorString()
-
-
-                        container.setBackgroundColor(pickedBg)
-                        toolbar.setBackgroundColor(pickedTb)
+                        applyThemeColors(bgArray[which], tbArray[which])
                     }
                     .setOnDismissListener {
                         bgColors.recycle()
