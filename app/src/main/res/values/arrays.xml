@@ -1,0 +1,30 @@
+<resources>
+    <string-array name="theme_names">
+        <item>Violet</item>
+        <item>Dark Green</item>
+        <item>Dark Blue</item>
+        <item>Brown</item>
+        <item>Blue Green</item>
+        <item>Light Blue</item>
+    </string-array>
+
+    <!-- Background colors -->
+    <array name="theme_bg_colors">
+        <item>@color/bg_violet</item>
+        <item>@color/bg_dark_green</item>
+        <item>@color/bg_dark_blue</item>
+        <item>@color/bg_brown</item>
+        <item>@color/bg_blue_green</item>
+        <item>@color/bg_light_blue</item>
+    </array>
+
+    <!-- Toolbar colors -->
+    <array name="theme_tb_colors">
+        <item>@color/tb_violet</item>
+        <item>@color/tb_dark_green</item>
+        <item>@color/tb_dark_blue</item>
+        <item>@color/tb_brown</item>
+        <item>@color/tb_blue_green</item>
+        <item>@color/tb_light_blue</item>
+    </array>
+</resources>

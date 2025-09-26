@@ -7,6 +7,16 @@
     app:showAsAction="never" />
 
 <item
+    android:id="@+id/action_theme"
+    android:title="Change theme"
+    app:showAsAction="never" />
+
+<item
+    android:id="@+id/action_open_new_file"
+    android:title="Open new file"
+    app:showAsAction="never" />
+
+<item
     android:id="@+id/action_delete_page"
     android:title="@string/delete_page"
     app:showAsAction="never" />

@@ -1,10 +1,25 @@
 package com.example.whiteboard
 
+import android.annotation.SuppressLint
+import android.content.ContentValues
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
+import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.MediaStore.MediaColumns
+import android.util.Base64
+import android.util.Log
+import android.view.GestureDetector
+import android.view.Gravity
 import android.view.Menu
 import android.view.MenuItem
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -12,6 +27,7 @@ import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.TextView
@@ -19,62 +35,30 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import androidx.cardview.widget.CardView
+import androidx.core.content.FileProvider
 import androidx.core.graphics.toColorInt
 import com.example.whiteboard.IInkApplication.engine
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.google.gson.stream.JsonReader
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
 import com.myscript.iink.ContentPackage
 import com.myscript.iink.ContentPart
-import com.myscript.iink.uireferenceimplementation.EditorBinding
-import com.myscript.iink.uireferenceimplementation.EditorData
-import com.myscript.iink.uireferenceimplementation.EditorView
-import com.myscript.iink.uireferenceimplementation.FontUtils
 import com.myscript.iink.uireferenceimplementation.*
-import java.io.File
-import kotlin.math.max
-import android.util.Log
-import android.annotation.SuppressLint
-import android.view.MotionEvent
-import android.view.GestureDetector
-import androidx.cardview.widget.CardView
 import java.io.*
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
-import com.google.gson.stream.JsonReader
-import android.content.ContentValues
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
-import android.provider.MediaStore.MediaColumns
-import android.media.MediaScannerConnection
-import java.io.BufferedOutputStream
-import java.io.FileOutputStream
-import java.io.OutputStreamWriter
-import java.io.InputStream
-import java.io.BufferedInputStream
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import android.graphics.Bitmap
-import android.util.Base64
-import androidx.core.content.FileProvider
-import android.content.Intent
-import java.io.ByteArrayOutputStream
-import android.widget.ImageView
-import android.view.Gravity
-import android.view.ViewGroup
-import android.content.ClipData
-import android.content.ClipboardManager
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.qrcode.QRCodeWriter
-import com.google.zxing.EncodeHintType
-import android.net.wifi.WifiManager
-import java.net.ServerSocket
-import java.net.Socket
-import java.net.NetworkInterface
-import java.net.Inet4Address
-
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
 
 class MainActivity : AppCompatActivity() {
@@ -98,6 +82,30 @@ class MainActivity : AppCompatActivity() {
     private var contentPart: ContentPart? = null
 
     private var editorBinding: EditorBinding? = null
+
+    private class ThemeAdapter(
+        private val context: android.content.Context,
+        private val names: Array<String>,
+        private val bgColors: IntArray,
+    ) : android.widget.BaseAdapter() {
+
+        override fun getCount(): Int = names.size
+        override fun getItem(position: Int): Any = names[position]
+        override fun getItemId(position: Int): Long = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+            val view = convertView ?: android.view.LayoutInflater.from(context)
+                .inflate(R.layout.item_theme_preview, parent, false)
+
+            val bgPreview = view.findViewById<View>(R.id.bg_preview)
+            val nameView = view.findViewById<TextView>(R.id.theme_name)
+
+            bgPreview.setBackgroundColor(bgColors[position])
+            nameView.text = names[position]
+
+            return view
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -693,7 +701,6 @@ class MainActivity : AppCompatActivity() {
     private fun normalizeLatexForDesmos(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
         var s = raw.trim()
-
         // Desmos understands \frac, not \dfrac (which it sees as a symbol name "dfrac")
         s = s.replace(Regex("""\\dfrac\b"""), """\\frac""")
 
@@ -763,7 +770,30 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    var container_color = "#3A506B"
 
+    fun Int.darken(factor: Float = 0.8f): Int {
+        val a = Color.alpha(this)
+        val r = (Color.red(this) * factor).toInt().coerceIn(0, 255)
+        val g = (Color.green(this) * factor).toInt().coerceIn(0, 255)
+        val b = (Color.blue(this) * factor).toInt().coerceIn(0, 255)
+        return Color.argb(a, r, g, b)
+    }
+
+    var card_color = "#2c3d52"
+
+    var toolbar_color = "#E0F0F6"
+
+    fun Int.toHexColorString(includeAlpha: Boolean = false): String {
+        return if (includeAlpha) {
+            String.format("#%08X", this)  // #AARRGGBB
+        } else {
+            String.format("#%06X", 0xFFFFFF and this)  // #RRGGBB
+        }
+    }
+
+
+    @OptIn(ExperimentalStdlibApi::class)
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.action_save -> {
@@ -776,6 +806,45 @@ class MainActivity : AppCompatActivity() {
             }
             R.id.action_share_qr -> {
                 showQrCodedialog()
+                true
+            }
+            R.id.action_theme -> {
+                val names = resources.getStringArray(R.array.theme_names)
+                val bgColors = resources.obtainTypedArray(R.array.theme_bg_colors)
+                val tbColors = resources.obtainTypedArray(R.array.theme_tb_colors)
+
+                val bgArray = IntArray(names.size) { i -> bgColors.getColor(i, Color.WHITE) }
+                val tbArray = IntArray(names.size) { i -> tbColors.getColor(i, Color.LTGRAY) }
+
+                val adapter = ThemeAdapter(this, names, bgArray)
+
+                AlertDialog.Builder(this)
+                    .setTitle("Choose Theme")
+                    .setAdapter(adapter) { _, which ->
+                        val pickedBg = bgArray[which]
+                        val pickedTb = tbArray[which]
+
+                        val container = findViewById<FrameLayout>(R.id.drawing_container)
+                        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+
+                        container_color = pickedBg.toHexColorString()
+                        toolbar_color = pickedTb.toHexColorString()
+                        card_color = pickedBg.darken(0.8f).toHexColorString()
+
+
+                        container.setBackgroundColor(pickedBg)
+                        toolbar.setBackgroundColor(pickedTb)
+                    }
+                    .setOnDismissListener {
+                        bgColors.recycle()
+                        tbColors.recycle()
+                    }
+                    .show()
+
+                true
+            }
+            R.id.action_open_new_file -> {
+                openNewFile()
                 true
             }
             R.id.action_load -> {
@@ -794,6 +863,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun openNewFile() {
+        // Clear current state
+        pages.clear()
+        pages.add(mutableListOf()) // fresh blank page
+        currentPageIndex = 0
+        currentFileName = null
+
+        // Reset drawing view
+        drawingView.setStrokes(pages[currentPageIndex])
+        updatePageNumber()
+
+        Toast.makeText(this, "Opened new blank file", Toast.LENGTH_SHORT).show()
+    }
 
 
     private fun showDeleteFileDialog() {
@@ -1683,28 +1765,28 @@ class MainActivity : AppCompatActivity() {
       <meta name="viewport" content="width=device-width, initial-scale=1"/>
       <title>Whiteboard Pages</title>
       <style>
-        :root { --gap: 12px; --bg:#111; --fg:#eee; }
+        :root { --gap: 12px; --bg:${toolbar_color}; --fg:#eee; }
         html, body { height: 100%; }
         body {
           margin:0; padding:16px; background:var(--bg); color:var(--fg);
           font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
         }
-        h1 { font-size: 18px; margin: 0 0 12px; }
+        h1 { font-size: 18px; margin: 0 0 12px; color: ${card_color};}
         /* Single-column, vertically scrolling list */
         .list {
           max-width: min(1200px, 94vw);
           margin: 0 auto;
         }
         .card {
-          background:#1b1b1b; border-radius:12px; padding:12px;
+          background:${card_color}; border-radius:12px; padding:12px;
           box-shadow: 0 2px 8px rgba(0,0,0,.35);
           margin: 0 0 var(--gap) 0;           /* vertical spacing between pages */
         }
         .card h2 {
-          margin:0 0 8px; font-size:14px; font-weight:600; color:#bbb;
+          margin:0 0 8px; font-size:14px; font-weight:600; color:${toolbar_color};
         }
         .shot {
-          width:100%; height:auto; display:block; border-radius:8px; background:#3A506B;
+          width:100%; height:auto; display:block; border-radius:8px; background:${container_color};
         }
         footer {
           margin-top: 32px;
