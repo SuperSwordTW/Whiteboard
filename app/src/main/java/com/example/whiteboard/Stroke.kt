@@ -30,6 +30,42 @@ data class StrokeData(
     val strokeWidth: Float
 )
 
+fun Stroke.toStrokeData(stepPx: Float = 3f): StrokeData {
+    val pm = PathMeasure(this.path, false)
+    val out = ArrayList<List<Float>>()
+
+    fun sampleOneContour(length: Float) {
+        if (length <= 0f) return
+        val step = if (stepPx <= 0f) 3f else stepPx
+        val pos = FloatArray(2)
+
+        var d = 0f
+        while (d <= length) {
+            if (pm.getPosTan(d, pos, null)) {
+                out.add(listOf(pos[0], pos[1]))
+            }
+            d += step
+        }
+        // Ensure last point is included
+        if (out.isEmpty() || (out.last()[0] != pos[0] || out.last()[1] != pos[1])) {
+            if (pm.getPosTan(length, pos, null)) {
+                out.add(listOf(pos[0], pos[1]))
+            }
+        }
+    }
+
+    // Iterate all contours in the path
+    do {
+        sampleOneContour(pm.length)
+    } while (pm.nextContour())
+
+    return StrokeData(
+        points = out as List<Pair<Float, Float>>,
+        color = paintToCopy.color,
+        strokeWidth = paintToCopy.strokeWidth
+    )
+}
+
 fun Stroke.toStrokeData(): StrokeData {
     val points = mutableListOf<Pair<Float, Float>>()
     val pm = PathMeasure(this.path, false)

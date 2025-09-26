@@ -36,16 +36,11 @@ import android.util.Log
 import android.annotation.SuppressLint
 import android.view.MotionEvent
 import android.view.GestureDetector
-import com.example.whiteboard.MathInputNormalizer
-import com.example.whiteboard.WolframCloudConverter
 import androidx.cardview.widget.CardView
 import java.io.*
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.zip.GZIPInputStream
-import java.util.zip.GZIPOutputStream
 import com.google.gson.stream.JsonReader
-import com.google.gson.stream.JsonWriter
 import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
@@ -61,7 +56,24 @@ import java.io.BufferedInputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
+import android.graphics.Bitmap
+import android.util.Base64
+import androidx.core.content.FileProvider
+import android.content.Intent
+import java.io.ByteArrayOutputStream
+import android.widget.ImageView
+import android.view.Gravity
+import android.view.ViewGroup
+import android.content.ClipData
+import android.content.ClipboardManager
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.EncodeHintType
+import android.net.wifi.WifiManager
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.NetworkInterface
+import java.net.Inet4Address
 
 
 
@@ -677,8 +689,22 @@ class MainActivity : AppCompatActivity() {
 
     private var desmosExprCounter = 0
 
+    // INSERT inside MainActivity (e.g., below concatLatex)
+    private fun normalizeLatexForDesmos(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        var s = raw.trim()
+
+        // Desmos understands \frac, not \dfrac (which it sees as a symbol name "dfrac")
+        s = s.replace(Regex("""\\dfrac\b"""), """\\frac""")
+
+        return s
+    }
+
+
     private fun sendLatexToDesmos(latex: String?) {
-        val jsLatex = org.json.JSONObject.quote(latex) // ensures proper escaping
+        val normalized_latex = normalizeLatexForDesmos(latex)
+        Log.d("desmos", "sendLatexToDesmos: $normalized_latex")
+        val jsLatex = org.json.JSONObject.quote(normalized_latex) // ensures proper escaping
         desmosExprCounter ++
         val exprId = "expr$desmosExprCounter"
         desmosWebView.evaluateJavascript(
@@ -748,6 +774,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 true
             }
+            R.id.action_share_qr -> {
+                showQrCodedialog()
+                true
+            }
             R.id.action_load -> {
                 showLoadDialog()
                 true
@@ -763,6 +793,8 @@ class MainActivity : AppCompatActivity() {
             else -> super.onOptionsItemSelected(item)
         }
     }
+
+
 
     private fun showDeleteFileDialog() {
         // List files from the same public location where we save
@@ -971,6 +1003,8 @@ class MainActivity : AppCompatActivity() {
         editorData?.editor?.close()
         contentPart?.close()
         contentPackage?.close()
+        galleryServer?.stop()
+        galleryServer = null
         super.onDestroy()
     }
 
@@ -1470,4 +1504,359 @@ class MainActivity : AppCompatActivity() {
             updatePageNumber()
         }
     }
+
+    private var galleryServer: TinyHttpServer? = null
+
+    // REPLACE the whole function body of showQrCodedialog() in MainActivity.kt
+    private fun showQrCodedialog() {
+        // Build the gallery HTML once
+        galleryServer?.stop()
+        galleryServer = null
+        val html = buildGalleryHtmlString()
+
+        // Start a tiny HTTP server to host it
+        val server = TinyHttpServer { html }
+        server.start(preferredPort = 8765)
+        galleryServer = server
+
+        // Compute the local IP address (same Wi-Fi/LAN)
+        val host = getLocalIpv4()
+        if (host == null) {
+            Toast.makeText(this, "No local network IP. Connect to Wi-Fi.", Toast.LENGTH_LONG).show()
+            server.stop()
+            return
+        }
+        val link = "http://$host:${server.port}/"
+
+        // Build the dialog UI
+        val padding = (16 * resources.displayMetrics.density).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+
+        val qrView = ImageView(this).apply {
+            // Generate a smaller QR (360 px instead of 720)
+            setImageBitmap(generateQrBitmap(link, size = 360))
+
+            // Constrain the size in the dialog
+            val qrSize = (200 * resources.displayMetrics.density).toInt() // ~200dp square
+            layoutParams = LinearLayout.LayoutParams(qrSize, qrSize).apply {
+                gravity = Gravity.CENTER
+            }
+
+            adjustViewBounds = true
+        }
+
+        val linkView = TextView(this).apply {
+            text = link
+            setTextIsSelectable(true)
+            textSize = 16f
+            setTextColor(Color.BLACK) // High-contrast; change to WHITE if your dialog is dark
+            setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 0)
+        }
+
+        val hintView = TextView(this).apply {
+            text = "Make sure both devices are on the same Wi-Fi. Remember to take screenshots. This link stops working when you close the application."
+            textSize = 12f
+            setTextColor(0xFF666666.toInt())
+            setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, 0)
+        }
+
+        container.addView(qrView)
+        container.addView(linkView)
+        container.addView(hintView)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Whiteboard Gallery Link")
+            .setView(container)
+            .setNegativeButton("Close", null)
+            .create()
+
+        dialog.show()
+    }
+
+    private class TinyHttpServer(private val htmlSupplier: () -> String) {
+        private var serverThread: Thread? = null
+        private var serverSocket: ServerSocket? = null
+        private val running = AtomicBoolean(false)
+        var port: Int = 8765
+            private set
+
+        fun start(preferredPort: Int = 8765) {
+            if (running.get()) return
+            running.set(true)
+            serverThread = Thread {
+                try {
+                    // Try preferredPort..preferredPort+20 to avoid collisions
+                    var ss: ServerSocket? = null
+                    var p = preferredPort
+                    while (p < preferredPort + 20 && ss == null) {
+                        try {
+                            ss = ServerSocket(p)
+                        } catch (_: Exception) { p++ }
+                    }
+                    if (ss == null) throw RuntimeException("No free port")
+                    serverSocket = ss
+                    port = p
+
+                    // Accept loop
+                    while (running.get()) {
+                        val client = try { ss.accept() } catch (_: Exception) { null } ?: continue
+                        handleClient(client)
+                    }
+                } catch (_: Exception) {
+                    // Silent fail; dialog will be closed by caller if needed
+                } finally {
+                    try { serverSocket?.close() } catch (_: Exception) {}
+                }
+            }.apply { isDaemon = true; start() }
+        }
+
+        private fun handleClient(client: Socket) {
+            client.use { sock ->
+                sock.getInputStream().bufferedReader().use { reader ->
+                    // Read the first request line only; discard rest
+                    val requestLine = reader.readLine() ?: return
+                    // Simple GET only; always return the gallery
+                    val body = htmlSupplier()
+                    val out = sock.getOutputStream().buffered()
+                    val headers = buildString {
+                        append("HTTP/1.1 200 OK\r\n")
+                        append("Content-Type: text/html; charset=utf-8\r\n")
+                        append("Content-Length: ${body.toByteArray().size}\r\n")
+                        append("Cache-Control: no-cache\r\n")
+                        append("Connection: close\r\n")
+                        append("\r\n")
+                    }
+                    out.write(headers.toByteArray())
+                    out.write(body.toByteArray())
+                    out.flush()
+                }
+            }
+        }
+
+        fun stop() {
+            running.set(false)
+            try { serverSocket?.close() } catch (_: Exception) {}
+            serverThread = null
+        }
+    }
+
+    private fun getLocalIpv4(): String? {
+        return try {
+            NetworkInterface.getNetworkInterfaces().toList().forEach { nif ->
+                if (!nif.isUp || nif.isLoopback) return@forEach
+                nif.inetAddresses.toList().forEach { addr ->
+                    if (!addr.isLoopbackAddress && addr is Inet4Address && addr.isSiteLocalAddress) {
+                        return addr.hostAddress
+                    }
+                }
+            }
+            null
+        } catch (_: Exception) { null }
+    }
+
+    private fun buildGalleryHtmlString(): String {
+        // Ensure current page saved into `pages`
+        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+
+        // Render each page -> base64 PNG (reuse renderPageBitmap from before)
+        val imagesBase64 = ArrayList<String>(pages.size)
+        for (i in pages.indices) {
+            val bmp = renderPageBitmap(pages[i])
+            val baos = java.io.ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
+            bmp.recycle()
+            val b64 = android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+            imagesBase64.add(b64)
+        }
+
+        return buildString {
+            // REPLACE the CSS + opening container div in the HTML template:
+            append(
+                """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8"/>
+      <meta name="viewport" content="width=device-width, initial-scale=1"/>
+      <title>Whiteboard Pages</title>
+      <style>
+        :root { --gap: 12px; --bg:#111; --fg:#eee; }
+        html, body { height: 100%; }
+        body {
+          margin:0; padding:16px; background:var(--bg); color:var(--fg);
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+        }
+        h1 { font-size: 18px; margin: 0 0 12px; }
+        /* Single-column, vertically scrolling list */
+        .list {
+          max-width: min(1200px, 94vw);
+          margin: 0 auto;
+        }
+        .card {
+          background:#1b1b1b; border-radius:12px; padding:12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,.35);
+          margin: 0 0 var(--gap) 0;           /* vertical spacing between pages */
+        }
+        .card h2 {
+          margin:0 0 8px; font-size:14px; font-weight:600; color:#bbb;
+        }
+        .shot {
+          width:100%; height:auto; display:block; border-radius:8px; background:#3A506B;
+        }
+        footer {
+          margin-top: 32px;
+          text-align: center;
+        }
+        .footer {
+          font-size: 12px;
+          color: #666;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>Whiteboard — ${pages.size} page${if (pages.size == 1) "" else "s"}</h1>
+      <div class="list">
+    """.trimIndent()
+            )
+            imagesBase64.forEachIndexed { index, b64 ->
+                append(
+                    """
+                <div class="card">
+                  <h2>Page ${index + 1}</h2>
+                  <img class="shot" loading="lazy" src="data:image/png;base64,$b64" alt="Page ${index + 1}" />
+                </div>
+                """.trimIndent()
+                )
+            }
+            append(
+                            """
+                  </div>
+                  <footer>
+                    <p class="footer">noob</p>
+                  </footer>
+                </body>
+                </html>
+                """.trimIndent()
+            )
+        }
+    }
+
+    private fun renderPageBitmap(page: List<Stroke>, bgColor: Int = Color.TRANSPARENT): Bitmap {
+        val w = drawingView.width.coerceAtLeast(1)
+        val h = drawingView.height.coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        canvas.drawColor(bgColor)
+
+        // Draw each stroke as-is
+        for (s in page) {
+            canvas.drawPath(s.path, s.paint)
+        }
+        return bmp
+    }
+
+    fun createPageGalleryLink(): Uri? {
+        // Ensure the current page's latest strokes are captured
+        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+
+        // Defensive: nothing to do if there are no pages
+        if (pages.isEmpty()) return null
+
+        // Render each page to base64 PNG
+        val imagesBase64 = ArrayList<String>(pages.size)
+        for (i in pages.indices) {
+            val bmp = renderPageBitmap(pages[i])
+            val baos = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
+            bmp.recycle()
+            val b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+            imagesBase64.add(b64)
+        }
+
+        // Build minimal, responsive HTML
+        val html = buildString {
+            append(
+                """
+            <!doctype html>
+            <html>
+            <head>
+              <meta charset="utf-8"/>
+              <meta name="viewport" content="width=device-width, initial-scale=1"/>
+              <title>Whiteboard Pages</title>
+              <style>
+                :root { --gap: 12px; --bg:#111; --fg:#eee; }
+                body {
+                  margin:0; padding:16px; background:var(--bg); color:var(--fg);
+                  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+                }
+                h1 { font-size: 18px; margin: 0 0 12px; }
+                .grid {
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                  gap: var(--gap);
+                }
+                .card {
+                  background:#1b1b1b; border-radius:12px; padding:12px;
+                  box-shadow: 0 2px 8px rgba(0,0,0,.35);
+                }
+                .card h2 {
+                  margin:0 0 8px; font-size:14px; font-weight:600; color:#bbb;
+                }
+                .shot {
+                  width:100%; height:auto; display:block; border-radius:8px;
+                  background:#000;
+                }
+              </style>
+            </head>
+            <body>
+              <h1>Whiteboard — ${pages.size} page${if (pages.size == 1) "" else "s"}</h1>
+              <div class="grid">
+            """.trimIndent()
+            )
+            imagesBase64.forEachIndexed { index, b64 ->
+                append(
+                    """
+                <div class="card">
+                  <h2>Page ${index + 1}</h2>
+                  <img class="shot" loading="lazy" src="data:image/png;base64,$b64" alt="Page ${index + 1}" />
+                </div>
+                """.trimIndent()
+                )
+            }
+            append(
+                """
+              </div>
+            </body>
+            </html>
+            """.trimIndent()
+            )
+        }
+
+        // Write HTML to externalCache so we can FileProvider it
+        val outFile = File(externalCacheDir ?: cacheDir, "whiteboard_pages_${System.currentTimeMillis()}.html")
+        FileOutputStream(outFile).use { it.write(html.toByteArray(Charsets.UTF_8)) }
+
+        // Turn it into a content:// Uri and grant read permission
+        val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", outFile)
+        grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        return uri
+    }
+
+    private fun generateQrBitmap(content: String, size: Int = 720): Bitmap {
+        val hints = mapOf(
+            EncodeHintType.MARGIN to 1 // small quiet zone
+        )
+        val bitMatrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        for (x in 0 until size) {
+            for (y in 0 until size) {
+                bmp.setPixel(x, y, if (bitMatrix[x, y]) Color.BLACK else Color.WHITE)
+            }
+        }
+        return bmp
+    }
+
 }
