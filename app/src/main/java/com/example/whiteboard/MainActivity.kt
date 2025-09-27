@@ -1656,7 +1656,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val hintView = TextView(this).apply {
-            text = "Make sure both devices are on the same Wi-Fi. Remember to take screenshots. This link stops working when you close the application."
+            text = "Make sure both devices are on the same Wi-Fi. Skibidi. Remember to take screenshots. This link stops working when you close the application."
             textSize = 12f
             setTextColor(0xFF666666.toInt())
             setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, 0)

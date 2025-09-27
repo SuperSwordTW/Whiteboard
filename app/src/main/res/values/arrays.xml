@@ -1,13 +1,13 @@
 <resources>
     <string-array name="theme_names">
-        <item>Violet</item>
-        <item>Dark Green</item>
-        <item>Dark Blue</item>
-        <item>Brown</item>
-        <item>Blue Green</item>
-        <item>Light Blue</item>
+        <item>紫羅蘭</item>
+        <item>祖母綠</item>
+        <item>深海藍</item>
+        <item>小熊棕</item>
+        <item>藍綠黨</item>
+        <item>水天藍</item>
     </string-array>
-
+    
     <!-- Background colors -->
     <array name="theme_bg_colors">
         <item>@color/bg_violet</item>
