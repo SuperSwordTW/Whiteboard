@@ -1775,50 +1775,164 @@ class MainActivity : AppCompatActivity() {
             // REPLACE the CSS + opening container div in the HTML template:
             append(
                 """
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8"/>
-      <meta name="viewport" content="width=device-width, initial-scale=1"/>
-      <title>Whiteboard Pages</title>
-      <style>
-        :root { --gap: 12px; --bg:${toolbar_color}; --fg:#eee; }
-        html, body { height: 100%; }
-        body {
-          margin:0; padding:16px; background:var(--bg); color:var(--fg);
-          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-        }
-        h1 { font-size: 18px; margin: 0 0 12px; color: ${card_color};}
-        /* Single-column, vertically scrolling list */
-        .list {
-          max-width: min(1200px, 94vw);
-          margin: 0 auto;
-        }
-        .card {
-          background:${card_color}; border-radius:12px; padding:12px;
-          box-shadow: 0 2px 8px rgba(0,0,0,.35);
-          margin: 0 0 var(--gap) 0;           /* vertical spacing between pages */
-        }
-        .card h2 {
-          margin:0 0 8px; font-size:14px; font-weight:600; color:${toolbar_color};
-        }
-        .shot {
-          width:100%; height:auto; display:block; border-radius:8px; background:${container_color};
-        }
-        footer {
-          margin-top: 32px;
-          text-align: center;
-        }
-        .footer {
-          font-size: 12px;
-          color: #666;
-        }
-      </style>
-    </head>
-    <body>
-      <h1>Whiteboard — ${pages.size} page${if (pages.size == 1) "" else "s"}</h1>
-      <div class="list">
-    """.trimIndent()
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Whiteboard Pages</title>
+  <style>
+    :root { --gap: 12px; --bg:${toolbar_color}; --fg:#eee; }
+    html, body { height: 100%; }
+    body {
+      margin:0; padding:16px; background:var(--bg); color:var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    h1 { font-size: 18px; margin: 0 0 12px; color: ${card_color}; cursor: pointer; }
+
+    /* Single-column, vertically scrolling list */
+    .list {
+      max-width: min(1200px, 94vw);
+      margin: 0 auto;
+    }
+    .card {
+      background:${card_color}; border-radius:12px; padding:12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+      margin: 0 0 var(--gap) 0;           /* vertical spacing between pages */
+      max-width: 1200px;
+      margin-left: auto; margin-right: auto;
+    }
+    .card h2 {
+      margin:0 0 8px; font-size:14px; font-weight:600; color:${toolbar_color};
+    }
+    .shot {
+      width:100%; height:auto; display:block; border-radius:8px; background:${container_color};
+    }
+    footer {
+      margin-top: 32px;
+      text-align: center;
+    }
+    .footer {
+      font-size: 12px;
+      color: #666;
+    }
+
+    /* Modal video popup */
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.7);
+      display: none;                       /* hidden by default */
+      align-items: center;                 /* center content */
+      justify-content: center;
+      padding: 24px;
+      z-index: 9999;
+    }
+    .modal.show { display: flex; }
+    .modal-card {
+      background: ${card_color};
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.5);
+      max-width: min(1280px, 98vw);   /* was 900px → bigger */
+      width: 100%;
+    }
+    .modal-header {
+      display:flex; align-items:center; justify-content:space-between;
+      margin: 0 0 8px;
+    }
+    .modal-header h3 {
+      margin:0; font-size:16px; color:${toolbar_color};
+    }
+    .close-btn {
+      background: transparent; border: none; color: #fff; font-size: 24px; line-height: 1;
+      cursor: pointer; padding: 4px 8px;
+    }
+    video {
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <!-- Clickable page title opens the video modal -->
+  <h1 id="pageTitle">
+    Whiteboard — ${pages.size} page${if (pages.size == 1) "" else "s"}
+  </h1>
+
+  <!-- Modal markup -->
+  <div id="videoModal" class="modal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wbVideoTitle">
+      <div class="modal-header">
+        <h3 id="wbVideoTitle">Foxy</h3>
+        <button class="close-btn" id="closeModal" aria-label="Close">×</button>
+      </div>
+      <iframe id="wbVideo"
+        width="100%" height="780"
+        src="data:text/html,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D'utf-8'%3E%3C%2Fhead%3E%3Cbody%20style%3D'margin%3A0%3Bbackground%3A%23000'%3E%3C%2Fbody%3E%3C%2Fhtml%3E"
+        data-embed="https://www.youtube.com/embed/CFO0K3xSXAw"
+        title="Foxy"
+        frameborder="0"
+        allow="autoplay; encrypted-media; picture-in-picture"
+        allowfullscreen
+        referrerpolicy="strict-origin-when-cross-origin"
+        sandbox="allow-scripts allow-same-origin allow-presentation">
+</iframe>
+    </div>
+  </div>
+
+  <div class="list"></div>
+
+<script>
+  (function () {
+    var title    = document.getElementById('pageTitle');
+    var modal    = document.getElementById('videoModal');
+    var closeBtn = document.getElementById('closeModal');
+    var iframe   = document.getElementById('wbVideo');
+    var baseUrl  = iframe.getAttribute('data-embed'); // e.g. https://www.youtube.com/embed/...
+
+    // A tiny blank data URL (prevents self-embedding of the current page)
+    var BLANK_DATA_URL = "data:text/html,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D'utf-8'%3E%3C%2Fhead%3E%3Cbody%20style%3D'margin%3A0%3Bbackground%3A%23000'%3E%3C%2Fbody%3E%3C%2Fhtml%3E";
+
+    function openModal() {
+      modal.classList.add('show');
+      modal.setAttribute('aria-hidden', 'false');
+
+      // Set src at click-time (user gesture) to satisfy autoplay policies.
+      var url = baseUrl + '?autoplay=1&playsinline=1&rel=0';
+      if (iframe.src !== url) {
+        // Remove any srcdoc (if present) and point to YouTube embed URL
+        iframe.removeAttribute('srcdoc');
+        iframe.src = url;
+      }
+    }
+
+    function closeModal() {
+      modal.classList.remove('show');
+      modal.setAttribute('aria-hidden', 'true');
+
+      // Navigate the iframe back to an inert data URL to fully stop playback
+      // and avoid the page appearing inside the iframe.
+      iframe.src = BLANK_DATA_URL;
+    }
+
+    title.addEventListener('click', openModal);
+    closeBtn.addEventListener('click', closeModal);
+
+    // Click outside the modal card closes it
+    modal.addEventListener('click', function (e) {
+      if (e.target === modal) closeModal();
+    });
+
+    // ESC to close
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeModal();
+    });
+  })();
+</script>
+""".trimIndent()
             )
             imagesBase64.forEachIndexed { index, b64 ->
                 append(
