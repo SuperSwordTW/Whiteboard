@@ -1866,14 +1866,14 @@ class MainActivity : AppCompatActivity() {
   <div id="videoModal" class="modal" aria-hidden="true">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wbVideoTitle">
       <div class="modal-header">
-        <h3 id="wbVideoTitle">Foxy</h3>
+        <h3 id="wbVideoTitle">Freddy</h3>
         <button class="close-btn" id="closeModal" aria-label="Close">×</button>
       </div>
       <iframe id="wbVideo"
         width="100%" height="780"
         src="data:text/html,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D'utf-8'%3E%3C%2Fhead%3E%3Cbody%20style%3D'margin%3A0%3Bbackground%3A%23000'%3E%3C%2Fbody%3E%3C%2Fhtml%3E"
-        data-embed="https://www.youtube.com/embed/CFO0K3xSXAw"
-        title="Foxy"
+        data-embed="https://www.youtube.com/embed/s4W1VR3ReZc"
+        title="Freddy"
         frameborder="0"
         allow="autoplay; encrypted-media; picture-in-picture"
         allowfullscreen
@@ -1901,7 +1901,7 @@ class MainActivity : AppCompatActivity() {
       modal.setAttribute('aria-hidden', 'false');
 
       // Set src at click-time (user gesture) to satisfy autoplay policies.
-      var url = baseUrl + '?autoplay=1&playsinline=1&rel=0';
+      var url = baseUrl + '?autoplay=1&playsinline=1&rel=0&start=46';
       if (iframe.src !== url) {
         // Remove any srcdoc (if present) and point to YouTube embed URL
         iframe.removeAttribute('srcdoc');
