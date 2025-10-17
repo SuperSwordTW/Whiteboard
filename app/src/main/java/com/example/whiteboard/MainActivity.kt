@@ -722,14 +722,14 @@ class MainActivity : AppCompatActivity() {
 
 
     fun nextPage() {
-        // Always clear selection/transform state BEFORE snapshotting or page swap,
-        // so no selected object from this page can be acted on after we leave it.
+        // 1) Clear selection/transform state (no lingering refs)
         drawingView.clearSelectionState()
 
-        // Persist current page strokes
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+        // 2) Persist the current page as a DEEP copy of strokes so the model
+        //    does not share Stroke/Path/Paint instances with the view or other pages.
+        pages[currentPageIndex] = deepCopyStrokes(drawingView.getStrokes())
 
-        // Advance or create a new page
+        // 3) Move to the next page or create a new one
         if (currentPageIndex < pages.size - 1) {
             currentPageIndex++
         } else {
@@ -737,10 +737,24 @@ class MainActivity : AppCompatActivity() {
             currentPageIndex = pages.size - 1
         }
 
-        // Load target page strokes; setStrokes() already hard-resets selection + indices
-        drawingView.setStrokes(pages[currentPageIndex])
+        // 4) Load the target page into the view.
+        //    setStrokes() already deep-copies internally, but we also ensure
+        //    the list we pass is a fresh list reference (no aliasing).
+        drawingView.setStrokes(deepCopyStrokes(pages[currentPageIndex]))
+
         drawingView.clearUndoOps()
         updatePageNumber()
+    }
+
+    // INSERT this helper just below nextPage() (inside MainActivity)
+    private fun deepCopyStrokes(src: List<Stroke>): MutableList<Stroke> {
+        val out = ArrayList<Stroke>(src.size)
+        for (s in src) {
+            val p = android.graphics.Path(s.path)
+            val paint = android.graphics.Paint(s.paint)
+            out.add(Stroke(p, paint))
+        }
+        return out
     }
 
     fun previousPage() {
@@ -748,11 +762,11 @@ class MainActivity : AppCompatActivity() {
 
 
         // Save current strokes
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+        pages[currentPageIndex] = deepCopyStrokes(drawingView.getStrokes())
 
         if (currentPageIndex > 0) {
             currentPageIndex--
-            drawingView.setStrokes(pages[currentPageIndex])
+            drawingView.setStrokes(deepCopyStrokes(pages[currentPageIndex]))
         }
         drawingView.clearUndoOps()
         updatePageNumber()
@@ -888,7 +902,8 @@ class MainActivity : AppCompatActivity() {
         currentFileName = null
 
         // Reset drawing view
-        drawingView.setStrokes(pages[currentPageIndex])
+        drawingView.setStrokes(deepCopyStrokes(pages[currentPageIndex]))
+
         updatePageNumber()
 
         Toast.makeText(this, "Opened new blank file", Toast.LENGTH_SHORT).show()
@@ -1025,7 +1040,7 @@ class MainActivity : AppCompatActivity() {
                     currentPageIndex = 0
                 }
 
-                drawingView.setStrokes(pages[currentPageIndex])
+                drawingView.setStrokes(deepCopyStrokes(pages[currentPageIndex]))
                 updatePageNumber()
             }
             .setNegativeButton("Cancel", null)
@@ -1457,7 +1472,7 @@ class MainActivity : AppCompatActivity() {
                     pages.clear()
                     pages.addAll(loadedPages!!)
                     currentPageIndex = 0
-                    drawingView.setStrokes(pages[currentPageIndex].toMutableList())
+                    drawingView.setStrokes(deepCopyStrokes(pages[currentPageIndex]))
                     updatePageNumber()
                     Toast.makeText(this, "Loaded $name", Toast.LENGTH_SHORT).show()
                 } else {
@@ -1469,7 +1484,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun snapshotAllPagesForSave(): List<List<StrokeData>> {
         // Ensure current page's latest strokes are stored
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+        pages[currentPageIndex] = deepCopyStrokes(drawingView.getStrokes())
 
         // Convert to StrokeData on the main thread to avoid concurrent mutation issues
         return pages.map { page -> page.map { it.toStrokeData() } }
@@ -1580,7 +1595,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveWhiteboard() {
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+        pages[currentPageIndex] = deepCopyStrokes(drawingView.getStrokes())
 
         val dataPages = pages.map { page -> page.map { it.toStrokeData() } }
         val json = gson.toJson(dataPages)
@@ -1599,7 +1614,7 @@ class MainActivity : AppCompatActivity() {
             pages.addAll(dataPages.map { page -> page.map { it.toStroke() }.toMutableList() })
 
             currentPageIndex = 0
-            drawingView.setStrokes(pages[currentPageIndex].toMutableList())
+            drawingView.setStrokes(deepCopyStrokes(pages[currentPageIndex]))
             updatePageNumber()
         }
     }
@@ -1656,7 +1671,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val hintView = TextView(this).apply {
-            text = "Make sure both devices are on the same Wi-Fi. Skibidi. Remember to take screenshots. This link stops working when you close the application."
+            text = "請連上大屏的熱點. Ar Ar Ar Freddy Fazbear. Remember to take screenshots. Skibidi my friend. This link stops working when you close the application."
             textSize = 12f
             setTextColor(0xFF666666.toInt())
             setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, 0)
@@ -1758,7 +1773,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildGalleryHtmlString(): String {
         // Ensure current page saved into `pages`
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+        pages[currentPageIndex] = deepCopyStrokes(drawingView.getStrokes())
 
         // Render each page -> base64 PNG (reuse renderPageBitmap from before)
         val imagesBase64 = ArrayList<String>(pages.size)
@@ -1973,7 +1988,7 @@ class MainActivity : AppCompatActivity() {
 
     fun createPageGalleryLink(): Uri? {
         // Ensure the current page's latest strokes are captured
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+        pages[currentPageIndex] = deepCopyStrokes(drawingView.getStrokes())
 
         // Defensive: nothing to do if there are no pages
         if (pages.isEmpty()) return null

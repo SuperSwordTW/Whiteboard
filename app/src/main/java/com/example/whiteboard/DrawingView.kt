@@ -674,7 +674,11 @@ class DrawingView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    fun getStrokes(): List<Stroke> = strokes
+    fun getStrokes(): MutableList<Stroke> {
+        // Return a defensive copy so callers can't hold a live reference
+        // to our internal list and accidentally share/alias it with pages[]
+        return ArrayList(strokes)
+    }
 
 
     fun clearSelectionState() {
@@ -694,28 +698,45 @@ class DrawingView @JvmOverloads constructor(
         invalidate()
     }
 
-    // REPLACE setStrokes(...) in DrawingView.kt
-    // REPLACE setStrokes(...) in DrawingView.kt
     fun setStrokes(newStrokes: MutableList<Stroke>) {
-        // Deep-copy to avoid shared Path/Paint; preserve ARGB/width exactly
-        val copy = newStrokes.map { s ->
-            val p = android.graphics.Path(s.path)
-            val paint = android.graphics.Paint(s.paint)
-            Stroke(p, paint)
+        // Fast path: if caller accidentally passes our own list, avoid
+        // clearing & re-adding the same references (no-ops).
+        if (newStrokes === strokes) {
+            // Still make sure visuals/indices are consistent.
+            selectedStrokes.clear()
+            dirtyTransformStrokes.clear()
+            selectionPath = null
+            markSelectionBoundsDirty()
+            requestStaticRebuild()
+            invalidate()
+            return
         }
 
+        // Deep-copy to avoid aliasing Path/Paint across pages or with the view.
+        // This ensures later mutations never affect previously saved/loaded pages.
+        val copy = ArrayList<Stroke>(newStrokes.size)
+        for (s in newStrokes) {
+            val p = android.graphics.Path(s.path)
+            val paint = android.graphics.Paint(s.paint)
+            copy.add(Stroke(p, paint))
+        }
+
+        // Replace content
         strokes.clear()
         strokes.addAll(copy)
 
+        // Reset per-stroke caches and (re)build spatial index exactly once.
         strokeAabbs.clear()
         indexDirty = true
-        rebuildSpatialIndex()
-        for (s in strokes) aabbOf(s)
+        rebuildSpatialIndex()    // this should populate strokeAabbs for all strokes
 
+        // Reset selection / transform state
         dirtyTransformStrokes.clear()
         selectedStrokes.clear()
         selectionPath = null
         markSelectionBoundsDirty()
+
+        // Refresh cached bitmap layers (if any) and redraw
         requestStaticRebuild()
         invalidate()
     }
