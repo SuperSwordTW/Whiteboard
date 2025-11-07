@@ -1175,42 +1175,10 @@ class MainActivity : AppCompatActivity() {
         return "${bare}_recovery_$ts.json"
     }
 
-    /**
-     * Synchronously save a best-effort recovery snapshot to public storage.
-     * - Avoids UI (no toasts).
-     * - Catches *all* throwables so it never throws from a crash path.
-     */
-    private fun saveEmergencyRecoverySync() {
-        try {
-            // 1) Ensure current page is reflected in pages[]
-            pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
-
-            // 2) Build snapshot (List<List<StrokeData>>) right now
-            val snapshot = pages.map { page -> page.map { it.toStrokeData() } }
-
-            // 3) Use a distinctive, timestamped recovery name
-            val recoveryName = makeRecoveryFileName()
-
-            // 4) Write directly using the same public saver you already have
-            //    (This is synchronous; do NOT use background executors here.)
-            saveToPublicSnapshot(recoveryName, snapshot)
-
-            // Optionally remember it as the "current file" if you want to continue on next launch:
-            // currentFileName = recoveryName
-        } catch (_: Throwable) {
-            // swallow — never throw during crash handling
-        }
-    }
-
-    /**
-     * Install a default UncaughtExceptionHandler that writes a recovery file
-     * to Documents/Whiteboard *before* letting the app die.
-     */
     private fun installCrashEmergencySaver() {
         val prior = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
             // Best effort: try to persist current work
-            saveEmergencyRecoverySync()
 
             // Delegate to the previous handler so normal crash flow (logs/ANR dialogs) continues
             try {
@@ -1592,31 +1560,6 @@ class MainActivity : AppCompatActivity() {
         }
         reader.endArray()
         return result
-    }
-
-    private fun saveWhiteboard() {
-        pages[currentPageIndex] = deepCopyStrokes(drawingView.getStrokes())
-
-        val dataPages = pages.map { page -> page.map { it.toStrokeData() } }
-        val json = gson.toJson(dataPages)
-        val file = File(filesDir, saveFileName)
-        file.writeText(json)
-    }
-
-    private fun loadWhiteboard() {
-        val file = File(filesDir, saveFileName)
-        if (file.exists()) {
-            val json = file.readText()
-            val type = object : TypeToken<MutableList<List<StrokeData>>>() {}.type
-            val dataPages: MutableList<List<StrokeData>> = gson.fromJson(json, type)
-
-            pages.clear()
-            pages.addAll(dataPages.map { page -> page.map { it.toStroke() }.toMutableList() })
-
-            currentPageIndex = 0
-            drawingView.setStrokes(deepCopyStrokes(pages[currentPageIndex]))
-            updatePageNumber()
-        }
     }
 
     private var galleryServer: TinyHttpServer? = null

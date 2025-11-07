@@ -1063,6 +1063,134 @@ class DrawingView @JvmOverloads constructor(
 
     private val lastPts = mutableMapOf<Int, PointF>()
 
+    private val lastMidPts = mutableMapOf<Int, PointF>()
+
+    private val smoothLastPts = mutableMapOf<Int, PointF>()         // last filtered point
+    private val lastDirs = mutableMapOf<Int, PointF>()               // last direction vector for angle check
+    private val euroX = mutableMapOf<Int, OneEuroFilter>()           // 1€ filter per pointer (X)
+    private val euroY = mutableMapOf<Int, OneEuroFilter>()           // 1€ filter per pointer (Y)
+    private val lastT = mutableMapOf<Int, Long>()                    // last timestamp per pointer (ms)
+
+    private val TOUCH_TOLERANCE = 2f
+    private val ANGLE_FLAT_DEG = 8f // <= ~8° counts as straight continuation
+
+    // Reasonable defaults for 1€ filter; tweak to taste.
+    private val EURO_MIN_CUTOFF = 1.0   // Hz (base smoothing)
+    private val EURO_BETA = 0.02        // speed sensitivity
+    private val EURO_D_CUTOFF = 1.0     // derivative cutoff
+
+    private class OneEuroFilter(
+        private var minCutoff: Double = 1.0,
+        private var beta: Double = 0.02,
+        private var dCutoff: Double = 1.0
+    ) {
+        private var xPrev: Double? = null
+        private var dxPrev: Double? = null
+        private var tPrev: Double? = null
+
+        private fun alpha(cutoff: Double, dt: Double): Double {
+            val tau = 1.0 / (2.0 * Math.PI * cutoff)
+            return 1.0 / (1.0 + tau / dt)
+        }
+
+        fun filter(x: Double, tMillis: Long): Double {
+            val t = tMillis / 1000.0
+            val tp = tPrev
+            var dt = 1.0 / 120.0 // fallback ~120 Hz
+            if (tp != null) dt = (t - tp).coerceAtLeast(1e-4)
+
+            // Derivative of signal
+            val dx = if (xPrev == null) 0.0 else (x - xPrev!!) / dt
+            val aD = alpha(dCutoff, dt)
+            val dxHat = if (dxPrev == null) dx else dxPrev!! + aD * (dx - dxPrev!!)
+
+            // Dynamic cutoff based on speed
+            val cutoff = minCutoff + beta * kotlin.math.abs(dxHat)
+            val a = alpha(cutoff, dt)
+            val xHat = if (xPrev == null) x else xPrev!! + a * (x - xPrev!!)
+
+            xPrev = xHat
+            dxPrev = dxHat
+            tPrev = t
+            return xHat
+        }
+    }
+
+    private fun angleBetweenDeg(ax: Float, ay: Float, bx: Float, by: Float): Float {
+        val da = kotlin.math.sqrt(ax*ax + ay*ay)
+        val db = kotlin.math.sqrt(bx*bx + by*by)
+        if (da < 1e-3f || db < 1e-3f) return 0f
+        val dot = (ax*bx + ay*by) / (da * db)
+        return (Math.toDegrees(acosSafe(dot.toDouble()))).toFloat()
+    }
+    private fun acosSafe(v: Double): Double = when {
+        v <= -1.0 -> Math.PI
+        v >= 1.0  -> 0.0
+        else      -> kotlin.math.acos(v)
+    }
+
+    private fun filteredPoint(id: Int, rawX: Float, rawY: Float, tMillis: Long): PointF {
+        val fx = euroX.getOrPut(id) { OneEuroFilter() }.filter(rawX.toDouble(), tMillis).toFloat()
+        val fy = euroY.getOrPut(id) { OneEuroFilter() }.filter(rawY.toDouble(), tMillis).toFloat()
+        lastT[id] = tMillis
+        return PointF(fx, fy)
+    }
+
+    private fun extendPathAdaptive(
+        id: Int,
+        path: Path,
+        rawX: Float,
+        rawY: Float,
+        tMillis: Long,
+        paintForInvalidation: Paint = currentPaint
+    ) {
+        val p = filteredPoint(id, rawX, rawY, tMillis)
+        val last = smoothLastPts[id]
+        if (last == null) {
+            path.moveTo(p.x, p.y)
+            smoothLastPts[id] = PointF(p.x, p.y)
+            lastPts[id] = PointF(p.x, p.y) // keep in sync with other logic that reads lastPts
+            lastDirs[id] = PointF(0f, 0f)
+            lastMidPts[id] = PointF(p.x, p.y)
+            return
+        }
+
+        val dx = p.x - last.x
+        val dy = p.y - last.y
+        if (dx*dx + dy*dy < TOUCH_TOLERANCE*TOUCH_TOLERANCE) return
+
+        // Angle-aware choice: if direction change is tiny, keep a straight line; else Bézier smooth.
+        val prevDir = lastDirs[id] ?: PointF(0f, 0f)
+        val ang = angleBetweenDeg(prevDir.x, prevDir.y, dx, dy)
+
+        if (ang <= ANGLE_FLAT_DEG) {
+            // Straight continuation
+            path.lineTo(p.x, p.y)
+        } else {
+            // Curvy turn: midpoint quadratic Bézier for buttery corners
+            val mx = (last.x + p.x) * 0.5f
+            val my = (last.y + p.y) * 0.5f
+            path.quadTo(last.x, last.y, mx, my)
+            lastMidPts[id]?.set(mx, my) ?: run { lastMidPts[id] = PointF(mx, my) }
+        }
+
+        // Update trackers
+        last.set(p.x, p.y)
+        prevDir.set(dx, dy)
+
+        // Targeted invalidate
+        val left   = min(last.x, p.x)
+        val right  = max(last.x, p.x)
+        val top    = min(last.y, p.y)
+        val bottom = max(last.y, p.y)
+        val pad = (paintForInvalidation.strokeWidth * 1.25f + 8f).toInt()
+        invalidate(
+            (left - pad).toInt(),
+            (top - pad).toInt(),
+            (right + pad).toInt(),
+            (bottom + pad).toInt()
+        )
+    }
 
 
     private fun handleMultiFingerDrawingTouch(event: MotionEvent) {
@@ -1075,61 +1203,70 @@ class DrawingView @JvmOverloads constructor(
                 // New finger starts drawing
                 val sx = event.getX(pointerIndex)
                 val sy = event.getY(pointerIndex)
-                val path = Path().apply { moveTo(sx, sy) }
-                activePaths[pointerId] = path
-                lastPts[pointerId] = PointF(sx, sy)
+                val t = event.eventTime
+                euroX[pointerId] = OneEuroFilter()
+                euroY[pointerId] = OneEuroFilter()
+                lastT[pointerId] = t
 
-                // Ensure we see the initial dot immediately
+                val p0 = filteredPoint(pointerId, sx, sy, t)
+                val path = Path().apply { moveTo(p0.x, p0.y) }
+                activePaths[pointerId] = path
+                smoothLastPts[pointerId] = PointF(p0.x, p0.y)
+                lastPts[pointerId] = PointF(p0.x, p0.y)
+                lastMidPts[pointerId] = PointF(p0.x, p0.y)
+                lastDirs[pointerId] = PointF(0f, 0f)
+
                 val pad = (currentPaint.strokeWidth * 0.75f + 6f).toInt()
-                invalidate((sx - pad).toInt(), (sy - pad).toInt(), (sx + pad).toInt(), (sy + pad).toInt())
+                invalidate((p0.x - pad).toInt(), (p0.y - pad).toInt(), (p0.x + pad).toInt(), (p0.y + pad).toInt())
             }
 
             MotionEvent.ACTION_MOVE -> {
-                // Update all active fingers
+                val history = event.historySize
                 for (i in 0 until event.pointerCount) {
                     val id = event.getPointerId(i)
-                    val px = event.getX(i)
-                    val py = event.getY(i)
+                    val path = activePaths[id] ?: continue
 
-                    activePaths[id]?.let { p ->
-                        // Extend path
-                        p.lineTo(px, py)
-
-                        // Invalidate only the segment’s bounding box (+ pad for stroke caps/AA)
-                        val prev = lastPts[id]
-                        if (prev != null) {
-                            val left   = min(prev.x, px)
-                            val right  = max(prev.x, px)
-                            val top    = min(prev.y, py)
-                            val bottom = max(prev.y, py)
-                            val pad = (currentPaint.strokeWidth * 0.75f + 6f).toInt()
-                            invalidate(
-                                (left - pad).toInt(),
-                                (top - pad).toInt(),
-                                (right + pad).toInt(),
-                                (bottom + pad).toInt()
-                            )
-                            prev.set(px, py)
-                        } else {
-                            lastPts[id] = PointF(px, py)
-                        }
+                    // Historical points first (each has its own timestamp)
+                    for (h in 0 until history) {
+                        val hx = event.getHistoricalX(i, h)
+                        val hy = event.getHistoricalY(i, h)
+                        val ht = event.getHistoricalEventTime(h)
+                        extendPathAdaptive(id, path, hx, hy, ht)
                     }
+
+                    // Then current sample
+                    val cx = event.getX(i)
+                    val cy = event.getY(i)
+                    val ct = event.eventTime
+                    extendPathAdaptive(id, path, cx, cy, ct)
                 }
             }
 
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_POINTER_UP,
             MotionEvent.ACTION_CANCEL -> {
-                // Finger finished — finalize stroke
-
                 activePaths[pointerId]?.let { path ->
+                    // Close last segment cleanly to last filtered point
+                    val last = smoothLastPts[pointerId]
+                    val lastMid = lastMidPts[pointerId]
+                    if (last != null && lastMid != null) {
+                        path.quadTo(lastMid.x, lastMid.y, last.x, last.y)
+                    }
+
                     val newStroke = Stroke(path, Paint(currentPaint))
                     strokes.add(newStroke)
                     afteraddstroke(newStroke)
                     pushUndo(UndoOp.Add(strokes.size - 1, listOf(newStroke)))
                 }
+                // Cleanup
                 activePaths.remove(pointerId)
+                smoothLastPts.remove(pointerId)
                 lastPts.remove(pointerId)
+                lastMidPts.remove(pointerId)
+                lastDirs.remove(pointerId)
+                euroX.remove(pointerId)
+                euroY.remove(pointerId)
+                lastT.remove(pointerId)
             }
         }
     }

@@ -10,6 +10,7 @@ import com.myscript.iink.PointerType
 import com.myscript.iink.MimeType
 import android.util.Log
 import com.myscript.iink.uireferenceimplementation.*
+import kotlin.math.max
 
 data class Stroke(
     val path: Path,
@@ -30,63 +31,72 @@ data class StrokeData(
     val strokeWidth: Float
 )
 
-fun Stroke.toStrokeData(stepPx: Float = 3f): StrokeData {
+fun Stroke.toStrokeData(sampleStepPx: Float? = null): StrokeData {
     val pm = PathMeasure(this.path, false)
-    val out = ArrayList<List<Float>>()
+    val pts = ArrayList<Pair<Float, Float>>(64)
 
-    fun sampleOneContour(length: Float) {
-        if (length <= 0f) return
-        val step = if (stepPx <= 0f) 3f else stepPx
-        val pos = FloatArray(2)
+    // Choose a sampling step that preserves short segments and thin strokes
+    val baseStep = sampleStepPx ?: max(1f, paint.strokeWidth / 2f)
+
+    val pos = FloatArray(2)
+
+    fun sampleContour(length: Float) {
+        if (length <= 0f) {
+            // Zero-length path (a "dot"). Persist its center so we can reconstruct it.
+            val b = android.graphics.RectF()
+            this@toStrokeData.path.computeBounds(b, true)
+            if (!b.isEmpty) {
+                pts.add(b.centerX() to b.centerY())
+            } else {
+                // Fallback: nothing in bounds → try current position at distance 0
+                if (pm.getPosTan(0f, pos, null)) {
+                    pts.add(pos[0] to pos[1])
+                }
+            }
+            return
+        }
 
         var d = 0f
         while (d <= length) {
             if (pm.getPosTan(d, pos, null)) {
-                out.add(listOf(pos[0], pos[1]))
+                pts.add(pos[0] to pos[1])
             }
-            d += step
+            d += baseStep
         }
-        // Ensure last point is included
-        if (out.isEmpty() || (out.last()[0] != pos[0] || out.last()[1] != pos[1])) {
-            if (pm.getPosTan(length, pos, null)) {
-                out.add(listOf(pos[0], pos[1]))
+        // Ensure the last point is included exactly at contour end
+        if (pm.getPosTan(length, pos, null)) {
+            val last = pts.lastOrNull()
+            if (last == null || last.first != pos[0] || last.second != pos[1]) {
+                pts.add(pos[0] to pos[1])
             }
         }
     }
 
-    // Iterate all contours in the path
+    // Iterate all contours in the Path
     do {
-        sampleOneContour(pm.length)
+        sampleContour(pm.length)
     } while (pm.nextContour())
 
     return StrokeData(
-        points = out as List<Pair<Float, Float>>,
-        color = paintToCopy.color,
-        strokeWidth = paintToCopy.strokeWidth
+        points = pts,
+        color = paint.color,
+        strokeWidth = paint.strokeWidth
     )
-}
-
-fun Stroke.toStrokeData(): StrokeData {
-    val points = mutableListOf<Pair<Float, Float>>()
-    val pm = PathMeasure(this.path, false)
-    val pos = FloatArray(2)
-    var distance = 0f
-    val step = 5f
-    while (distance < pm.length) {
-        pm.getPosTan(distance, pos, null)
-        points.add(pos[0] to pos[1])
-        distance += step
-    }
-    return StrokeData(points, paint.color, paint.strokeWidth)
 }
 
 fun StrokeData.toStroke(): Stroke {
     val path = Path()
     if (points.isNotEmpty()) {
-        val first = points.first()
-        path.moveTo(first.first, first.second)
-        for (p in points.drop(1)) {
-            path.lineTo(p.first, p.second)
+        if (points.size == 1) {
+            // Rebuild a visible dot using the stroke width
+            val (x, y) = points.first()
+            path.addCircle(x, y, max(1f, strokeWidth / 2f), Path.Direction.CW)
+        } else {
+            val first = points.first()
+            path.moveTo(first.first, first.second)
+            for (p in points.drop(1)) {
+                path.lineTo(p.first, p.second)
+            }
         }
     }
     val paint = Paint().apply {
