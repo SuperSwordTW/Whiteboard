@@ -59,6 +59,9 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
+import java.io.EOFException
+import com.google.gson.JsonSyntaxException
+import com.google.gson.stream.JsonToken
 
 
 class MainActivity : AppCompatActivity() {
@@ -1563,21 +1566,128 @@ class MainActivity : AppCompatActivity() {
     /** Streaming reader for pages -> strokes */
     private fun readPagesStreaming(reader: JsonReader): MutableList<MutableList<Stroke>> {
         val result = mutableListOf<MutableList<Stroke>>()
-        reader.beginArray()
-        while (reader.hasNext()) {
-            // Each page: array of StrokeData
-            val page = mutableListOf<Stroke>()
-            reader.beginArray()
-            while (reader.hasNext()) {
-                val sd = gson.fromJson<StrokeData>(reader, StrokeData::class.java)
-                page.add(sd.toStroke())
+        // Be generous when reading: tolerate some malformed trailing data.
+        reader.isLenient = true
+
+        try {
+            reader.beginArray() // pages [
+
+            // Outer loop: pages
+            while (true) {
+                val outerToken = try {
+                    if (!reader.hasNext()) break
+                    reader.peek()
+                } catch (e: EOFException) {
+                    // Hit EOF while checking for the next page -> just return what we have
+                    Log.e("Load", "EOF while reading pages array; returning partial result", e)
+                    return result
+                } catch (e: Exception) {
+                    Log.e("Load", "Error while peeking next page token; returning partial result", e)
+                    return result
+                }
+
+                if (outerToken == JsonToken.END_ARRAY) {
+                    // No more pages
+                    reader.endArray()
+                    break
+                }
+
+                // Each page is an array of StrokeData
+                val page = mutableListOf<Stroke>()
+                result.add(page)
+
+                try {
+                    reader.beginArray()
+                } catch (e: EOFException) {
+                    Log.e("Load", "EOF when starting a page array; returning pages parsed so far", e)
+                    return result
+                } catch (e: Exception) {
+                    Log.e("Load", "Error when starting a page array; returning pages parsed so far", e)
+                    return result
+                }
+
+                // Inner loop: strokes within a page
+                while (true) {
+                    val token = try {
+                        if (!reader.hasNext()) {
+                            // End of input reached inside page; we'll try to close and return
+                            break
+                        }
+                        reader.peek()
+                    } catch (e: EOFException) {
+                        Log.e("Load", "EOF while peeking stroke token; returning partial result", e)
+                        return result
+                    } catch (e: Exception) {
+                        Log.e("Load", "Error while peeking stroke token; returning partial result", e)
+                        return result
+                    }
+
+                    if (token == JsonToken.END_ARRAY) {
+                        // End of this page
+                        try {
+                            reader.endArray()
+                        } catch (e: Exception) {
+                            // If this fails, we still keep strokes parsed so far
+                            Log.e("Load", "Error closing page array; keeping strokes already read", e)
+                        }
+                        break
+                    }
+
+                    // Try to read one StrokeData
+                    try {
+                        val sd = gson.fromJson<StrokeData>(reader, StrokeData::class.java)
+                        page.add(sd.toStroke())
+                    } catch (e: EOFException) {
+                        // This is the typical "End of input at path $[...]" case:
+                        // current StrokeData is truncated; keep everything up to here.
+                        Log.e("Load", "EOF while reading StrokeData; returning strokes/pages parsed so far", e)
+                        return result
+                    } catch (e: JsonSyntaxException) {
+                        // Bad JSON for this stroke; skip it and try to continue.
+                        Log.e("Load", "JsonSyntaxException reading StrokeData; skipping this stroke", e)
+                        skipValueSafely(reader)
+                    } catch (e: IllegalStateException) {
+                        // Reader state issue; try skipping and continue
+                        Log.e("Load", "IllegalStateException reading StrokeData; skipping this stroke", e)
+                        skipValueSafely(reader)
+                    } catch (e: Exception) {
+                        // Any other problem; skip this one stroke and continue
+                        Log.e("Load", "Unexpected error reading StrokeData; skipping this stroke", e)
+                        skipValueSafely(reader)
+                    }
+                }
             }
-            reader.endArray()
-            result.add(page)
+        } catch (e: EOFException) {
+            // EOF while still inside the top-level array
+            Log.e("Load", "EOF at top-level while reading; returning partial pages", e)
+            return result
+        } catch (e: Exception) {
+            // Some other top-level parsing problem; we still return whatever was parsed
+            Log.e("Load", "Top-level error while reading pages; returning partial pages", e)
+            return result
+        } finally {
+            try {
+                reader.close()
+            } catch (_: Exception) {
+            }
         }
-        reader.endArray()
+
         return result
     }
+
+    private fun skipValueSafely(reader: JsonReader) {
+        try {
+            reader.skipValue()
+        } catch (e: EOFException) {
+            // End of file while skipping — nothing more to do
+            Log.e("Load", "EOF while skipping malformed value", e)
+        } catch (e: Exception) {
+            Log.e("Load", "Error while skipping malformed value", e)
+        }
+    }
+
+
+
 
     private fun saveWhiteboard() {
         pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
@@ -1605,12 +1715,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var galleryServer: TinyHttpServer? = null
+    private var qrDialog: AlertDialog? = null
+    private var isShowingQrDialog: Boolean = false
 
     // REPLACE the whole function body of showQrCodedialog() in MainActivity.kt
     private fun showQrCodedialog() {
-        // Build the gallery HTML once
+        // If a QR dialog is already shown or being prepared, avoid creating another one.
+        if (isShowingQrDialog) {
+            // If we already have a dialog instance, just bring it back if needed.
+            qrDialog?.let {
+                if (!it.isShowing) it.show()
+            }
+            return
+        }
+        isShowingQrDialog = true
+
+        // Ensure any previous server is stopped before starting a new one
         galleryServer?.stop()
         galleryServer = null
+
+        // Build the gallery HTML once
         val html = buildGalleryHtmlString()
 
         // Start a tiny HTTP server to host it
@@ -1623,6 +1747,8 @@ class MainActivity : AppCompatActivity() {
         if (host == null) {
             Toast.makeText(this, "No local network IP. Connect to Wi-Fi.", Toast.LENGTH_LONG).show()
             server.stop()
+            galleryServer = null
+            isShowingQrDialog = false
             return
         }
         val link = "http://$host:${server.port}/"
@@ -1656,7 +1782,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val hintView = TextView(this).apply {
-            text = "Make sure both devices are on the same Wi-Fi. Skibidi. Remember to take screenshots. This link stops working when you close the application."
+            text = "請連上大屏熱點. Ar Ar Ar Freddy Fazbear. Remember to take screenshots. This link stops working when you close the application."
             textSize = 12f
             setTextColor(0xFF666666.toInt())
             setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, 0)
@@ -1672,6 +1798,15 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Close", null)
             .create()
 
+        dialog.setOnDismissListener {
+            // When the user closes the dialog (or activity finishes), clean everything up
+            isShowingQrDialog = false
+            galleryServer?.stop()
+            galleryServer = null
+            qrDialog = null
+        }
+
+        qrDialog = dialog
         dialog.show()
     }
 
