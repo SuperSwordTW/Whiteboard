@@ -91,8 +91,7 @@
                     android:id="@+id/btn_draw"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:src="@drawable/ic_draw"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/btn_tool_background"
                     android:contentDescription="@string/draw"
                      />
 
@@ -101,7 +100,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:src="@drawable/ic_select"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/btn_tool_background"
                     android:contentDescription="@string/select"
                     />
 
@@ -110,7 +109,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:src="@drawable/ic_delete"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/btn_tool_background"
                     android:contentDescription="@string/delete_selected"
                     />
 
@@ -119,7 +118,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:src="@drawable/ic_shape"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/btn_tool_background"
                     android:contentDescription="@string/shape"
                     />
 
@@ -137,7 +136,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:src="@drawable/ic_math"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/btn_tool_background"
                     android:contentDescription="@string/desmos"
                     />
 
@@ -146,7 +145,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:src="@drawable/ic_send"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:background="@drawable/btn_tool_background"
                     android:contentDescription="@string/desmos"
                     />
 
