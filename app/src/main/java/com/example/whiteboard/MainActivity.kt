@@ -1823,10 +1823,9 @@ class MainActivity : AppCompatActivity() {
             .create()
 
         dialog.setOnDismissListener {
-            // When the user closes the dialog (or activity finishes), clean everything up
+            // Keep the server running!
+            // Only reset the dialog-specific flags
             isShowingQrDialog = false
-            galleryServer?.stop()
-            galleryServer = null
             qrDialog = null
         }
 
