@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Whiteboard</string>
+    <string name="app_name">Theta</string>
     <string name="draw">Draw</string>
     <string name="select">Select</string>
     <string name="delete_selected">Delete Selected</string>
