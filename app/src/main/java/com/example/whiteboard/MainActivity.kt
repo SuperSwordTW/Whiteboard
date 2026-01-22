@@ -1504,18 +1504,23 @@ class MainActivity : AppCompatActivity() {
             }
 
             runOnUiThread {
-                // Hide the loading screen as soon as we return to the UI thread
                 hideLoadingScreen()
+                if (loadedPages != null && loadedPages!!.isNotEmpty()) {
+                    // 1. Fully replace the list with the loaded data
+                    pages = loadedPages!!.toMutableList()
 
-                if (loadedPages != null) {
-                    pages.clear()
-                    pages.addAll(loadedPages!!)
+                    // 2. Reset to the first page
                     currentPageIndex = 0
-                    drawingView.setStrokes(pages[currentPageIndex].toMutableList())
+
+                    // 3. Update the view with the new strokes
+                    drawingView.setStrokes(pages[currentPageIndex])
+
+                    // 4. IMPORTANT: Explicitly refresh the UI page counter
                     updatePageNumber()
-                    Toast.makeText(this, "Loaded $name", Toast.LENGTH_SHORT).show()
+
+                    Toast.makeText(this, "Loaded ${pages.size} pages from $name", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(this, "Load failed: ${err ?: "Unknown error"}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Load failed or file empty: ${err ?: "Unknown error"}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -1617,113 +1622,67 @@ class MainActivity : AppCompatActivity() {
     /** Streaming reader for pages -> strokes */
     private fun readPagesStreaming(reader: JsonReader): MutableList<MutableList<Stroke>> {
         val result = mutableListOf<MutableList<Stroke>>()
-        // Be generous when reading: tolerate some malformed trailing data.
         reader.isLenient = true
 
         try {
-            reader.beginArray() // pages [
+            // Start the top-level array: [ (pages)
+            reader.beginArray()
 
-            // Outer loop: pages
-            while (true) {
-                val outerToken = try {
-                    if (!reader.hasNext()) break
-                    reader.peek()
-                } catch (e: EOFException) {
-                    // Hit EOF while checking for the next page -> just return what we have
-                    Log.e("Load", "EOF while reading pages array; returning partial result", e)
-                    return result
-                } catch (e: Exception) {
-                    Log.e("Load", "Error while peeking next page token; returning partial result", e)
-                    return result
-                }
-
-                if (outerToken == JsonToken.END_ARRAY) {
-                    // No more pages
-                    reader.endArray()
-                    break
-                }
-
-                // Each page is an array of StrokeData
+            while (reader.hasNext()) {
+                // Each element in the top-level array must be a Page array: [ (strokes)
                 val page = mutableListOf<Stroke>()
-                result.add(page)
 
                 try {
                     reader.beginArray()
-                } catch (e: EOFException) {
-                    Log.e("Load", "EOF when starting a page array; returning pages parsed so far", e)
-                    return result
+
+                    while (reader.hasNext()) {
+                        // Peek to ensure we are looking at an object (StrokeData)
+                        if (reader.peek() == JsonToken.BEGIN_OBJECT) {
+                            val sd = gson.fromJson<StrokeData>(reader, StrokeData::class.java)
+                            if (sd != null) {
+                                page.add(sd.toStroke())
+                            }
+                        } else {
+                            // If it's not an object, skip it to prevent getting stuck
+                            reader.skipValue()
+                        }
+                    }
+
+                    reader.endArray() // End the stroke array for this page
+                    result.add(page)   // Only add the page once its array is fully consumed
+
                 } catch (e: Exception) {
-                    Log.e("Load", "Error when starting a page array; returning pages parsed so far", e)
-                    return result
-                }
-
-                // Inner loop: strokes within a page
-                while (true) {
-                    val token = try {
-                        if (!reader.hasNext()) {
-                            // End of input reached inside page; we'll try to close and return
-                            break
-                        }
-                        reader.peek()
-                    } catch (e: EOFException) {
-                        Log.e("Load", "EOF while peeking stroke token; returning partial result", e)
-                        return result
-                    } catch (e: Exception) {
-                        Log.e("Load", "Error while peeking stroke token; returning partial result", e)
-                        return result
-                    }
-
-                    if (token == JsonToken.END_ARRAY) {
-                        // End of this page
-                        try {
-                            reader.endArray()
-                        } catch (e: Exception) {
-                            // If this fails, we still keep strokes parsed so far
-                            Log.e("Load", "Error closing page array; keeping strokes already read", e)
-                        }
-                        break
-                    }
-
-                    // Try to read one StrokeData
-                    try {
-                        val sd = gson.fromJson<StrokeData>(reader, StrokeData::class.java)
-                        page.add(sd.toStroke())
-                    } catch (e: EOFException) {
-                        // This is the typical "End of input at path $[...]" case:
-                        // current StrokeData is truncated; keep everything up to here.
-                        Log.e("Load", "EOF while reading StrokeData; returning strokes/pages parsed so far", e)
-                        return result
-                    } catch (e: JsonSyntaxException) {
-                        // Bad JSON for this stroke; skip it and try to continue.
-                        Log.e("Load", "JsonSyntaxException reading StrokeData; skipping this stroke", e)
-                        skipValueSafely(reader)
-                    } catch (e: IllegalStateException) {
-                        // Reader state issue; try skipping and continue
-                        Log.e("Load", "IllegalStateException reading StrokeData; skipping this stroke", e)
-                        skipValueSafely(reader)
-                    } catch (e: Exception) {
-                        // Any other problem; skip this one stroke and continue
-                        Log.e("Load", "Unexpected error reading StrokeData; skipping this stroke", e)
-                        skipValueSafely(reader)
-                    }
+                    Log.e("Load", "Error parsing page at index ${result.size}", e)
+                    // If a page is corrupted, try to skip to the end of its array to find the next page
+                    consumeUntilEndArray(reader)
                 }
             }
-        } catch (e: EOFException) {
-            // EOF while still inside the top-level array
-            Log.e("Load", "EOF at top-level while reading; returning partial pages", e)
-            return result
+
+            reader.endArray() // End the top-level pages array
         } catch (e: Exception) {
-            // Some other top-level parsing problem; we still return whatever was parsed
-            Log.e("Load", "Top-level error while reading pages; returning partial pages", e)
-            return result
+            Log.e("Load", "Fatal error in streaming reader", e)
         } finally {
-            try {
-                reader.close()
-            } catch (_: Exception) {
-            }
+            try { reader.close() } catch (_: Exception) {}
         }
 
         return result
+    }
+
+    /**
+     * Safety helper to skip a corrupted page and find the start of the next one.
+     */
+    private fun consumeUntilEndArray(reader: JsonReader) {
+        try {
+            var depth = 1
+            while (depth > 0 && reader.hasNext()) {
+                when (reader.peek()) {
+                    JsonToken.BEGIN_ARRAY -> depth++
+                    JsonToken.END_ARRAY -> depth--
+                    else -> reader.skipValue()
+                }
+            }
+            if (reader.peek() == JsonToken.END_ARRAY) reader.endArray()
+        } catch (_: Exception) {}
     }
 
     private fun skipValueSafely(reader: JsonReader) {
