@@ -1020,7 +1020,10 @@ class MainActivity : AppCompatActivity() {
 
                         if (deleted) {
                             Toast.makeText(this, "Deleted $targetName", Toast.LENGTH_SHORT).show()
-                            if (currentFileName == targetName) currentFileName = null
+                            if (currentFileName == targetName){
+                                currentFileName = null
+                                resetToBlankPage()
+                            }
                         } else {
                             Toast.makeText(this, "Failed to delete $targetName", Toast.LENGTH_SHORT).show()
                         }
@@ -1029,6 +1032,23 @@ class MainActivity : AppCompatActivity() {
                     .show()
             }
             .show()
+    }
+
+    private fun resetToBlankPage() {
+        // 1. Clear all stored pages and add one fresh blank page
+        pages.clear()
+        pages.add(mutableListOf())
+        currentPageIndex = 0
+
+        // 2. Hard reset the DrawingView state
+        drawingView.clearSelectionState()
+        drawingView.clearUndoOps()
+
+        // 3. Set the DrawingView to the new empty page
+        drawingView.setStrokes(pages[currentPageIndex])
+
+        // 4. Update the UI page numbering
+        updatePageNumber()
     }
 
 
@@ -1173,7 +1193,11 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Load Whiteboard")
             .setItems(names.toTypedArray()) { _, which ->
                 val name = names[which]
-                loadFromFile(name)          // this will call openFromPublic(...) first
+
+                // Show loading screen before starting the background task
+                showLoadingScreen()
+
+                loadFromFile(name)
                 currentFileName = name
             }
             .show()
@@ -1458,7 +1482,7 @@ class MainActivity : AppCompatActivity() {
             var err: String? = null
 
             try {
-                // 1) Try public shared storage first
+                // Try public shared storage first
                 val publicIn = openFromPublic(name)
                 if (publicIn != null) {
                     publicIn.use { input ->
@@ -1467,7 +1491,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 } else {
-                    // 2) Fallback to your existing internal files dir (legacy saves)
+                    // Fallback to legacy saves
                     val resolved = resolveLoadName(name)
                     openFileInput(resolved).use { baseIn ->
                         JsonReader(BufferedReader(InputStreamReader(baseIn, Charsets.UTF_8))).use { reader ->
@@ -1480,6 +1504,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             runOnUiThread {
+                // Hide the loading screen as soon as we return to the UI thread
+                hideLoadingScreen()
+
                 if (loadedPages != null) {
                     pages.clear()
                     pages.addAll(loadedPages!!)
@@ -1742,95 +1769,122 @@ class MainActivity : AppCompatActivity() {
     private var qrDialog: AlertDialog? = null
     private var isShowingQrDialog: Boolean = false
 
+    private var loadingDialog: android.app.Dialog? = null
+
+    private fun showLoadingScreen() {
+        loadingDialog = android.app.Dialog(this, android.R.style.Theme_Translucent_NoTitleBar).apply {
+            setContentView(R.layout.layout_loading_screen)
+            setCancelable(false) // Prevent user from clicking back or outside
+            window?.setWindowAnimations(android.R.style.Animation_Dialog) // Smooth transition
+            show()
+        }
+    }
+
+    private fun hideLoadingScreen() {
+        loadingDialog?.dismiss()
+        loadingDialog = null
+    }
+
+
+
+
     // REPLACE the whole function body of showQrCodedialog() in MainActivity.kt
     private fun showQrCodedialog() {
-        // If a QR dialog is already shown or being prepared, avoid creating another one.
         if (isShowingQrDialog) {
-            // If we already have a dialog instance, just bring it back if needed.
-            qrDialog?.let {
-                if (!it.isShowing) it.show()
-            }
+            qrDialog?.let { if (!it.isShowing) it.show() }
             return
         }
-        isShowingQrDialog = true
 
-        // Ensure any previous server is stopped before starting a new one
-        galleryServer?.stop()
-        galleryServer = null
+        // 1. Show the loading screen immediately
+        showLoadingScreen()
 
-        // Build the gallery HTML once
-        val html = buildGalleryHtmlString()
+        // 2. Run generation in a background thread to keep UI responsive
+        // and prevent the "loading screen" from being stuck
+        java.lang.Thread {
+            try {
+                isShowingQrDialog = true
+                galleryServer?.stop()
+                galleryServer = null
 
-        // Start a tiny HTTP server to host it
-        val server = TinyHttpServer { html }
-        server.start(preferredPort = 8765)
-        galleryServer = server
+                // Heavy lifting: rendering all pages to Base64
+                val html = buildGalleryHtmlString()
 
-        // Compute the local IP address (same Wi-Fi/LAN)
-        val host = getLocalIpv4()
-        if (host == null) {
-            Toast.makeText(this, "No local network IP. Connect to Wi-Fi.", Toast.LENGTH_LONG).show()
-            server.stop()
-            galleryServer = null
-            isShowingQrDialog = false
-            return
-        }
-        val link = "http://$host:${server.port}/"
+                val server = TinyHttpServer { html }
+                server.start(preferredPort = 8765)
+                galleryServer = server
 
-        // Build the dialog UI
-        val padding = (16 * resources.displayMetrics.density).toInt()
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(padding, padding, padding, padding)
-        }
+                val host = getLocalIpv4()
 
-        val qrView = ImageView(this).apply {
-            // Generate a smaller QR (360 px instead of 720)
-            setImageBitmap(generateQrBitmap(link, size = 360))
+                // 3. Switch back to UI thread to show the result
+                runOnUiThread {
+                    hideLoadingScreen()
 
-            // Constrain the size in the dialog
-            val qrSize = (200 * resources.displayMetrics.density).toInt() // ~200dp square
-            layoutParams = LinearLayout.LayoutParams(qrSize, qrSize).apply {
-                gravity = Gravity.CENTER
+                    if (host == null) {
+                        Toast.makeText(this, "No local network IP. Connect to Wi-Fi.", Toast.LENGTH_LONG).show()
+                        server.stop()
+                        galleryServer = null
+                        isShowingQrDialog = false
+                        return@runOnUiThread
+                    }
+
+                    val link = "http://$host:${server.port}/"
+
+                    // Build the dialog UI (Existing Logic)
+                    val padding = (16 * resources.displayMetrics.density).toInt()
+                    val container = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(padding, padding, padding, padding)
+                    }
+
+                    val qrView = ImageView(this).apply {
+                        setImageBitmap(generateQrBitmap(link, size = 360))
+                        val qrSize = (200 * resources.displayMetrics.density).toInt()
+                        layoutParams = LinearLayout.LayoutParams(qrSize, qrSize).apply {
+                            gravity = Gravity.CENTER
+                        }
+                        adjustViewBounds = true
+                    }
+
+                    val linkView = TextView(this).apply {
+                        text = link
+                        setTextIsSelectable(true)
+                        textSize = 16f
+                        setTextColor(Color.BLACK)
+                        setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 0)
+                    }
+
+                    val hintView = TextView(this).apply {
+                        text = "請連上大屏熱點. Ar Ar Ar Freddy Fazbear."
+                        textSize = 12f
+                        setTextColor(0xFF666666.toInt())
+                        setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, 0)
+                    }
+
+                    container.addView(qrView)
+                    container.addView(linkView)
+                    container.addView(hintView)
+
+                    qrDialog = AlertDialog.Builder(this)
+                        .setTitle("Whiteboard Gallery Link")
+                        .setView(container)
+                        .setNegativeButton("Close", null)
+                        .create()
+
+                    qrDialog?.setOnDismissListener {
+                        isShowingQrDialog = false
+                        qrDialog = null
+                    }
+
+                    qrDialog?.show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    hideLoadingScreen()
+                    isShowingQrDialog = false
+                    Toast.makeText(this, "Failed to generate QR: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
-
-            adjustViewBounds = true
-        }
-
-        val linkView = TextView(this).apply {
-            text = link
-            setTextIsSelectable(true)
-            textSize = 16f
-            setTextColor(Color.BLACK) // High-contrast; change to WHITE if your dialog is dark
-            setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 0)
-        }
-
-        val hintView = TextView(this).apply {
-            text = "請連上大屏熱點. Ar Ar Ar Freddy Fazbear."
-            textSize = 12f
-            setTextColor(0xFF666666.toInt())
-            setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, 0)
-        }
-
-        container.addView(qrView)
-        container.addView(linkView)
-        container.addView(hintView)
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Whiteboard Gallery Link")
-            .setView(container)
-            .setNegativeButton("Close", null)
-            .create()
-
-        dialog.setOnDismissListener {
-            // Keep the server running!
-            // Only reset the dialog-specific flags
-            isShowingQrDialog = false
-            qrDialog = null
-        }
-
-        qrDialog = dialog
-        dialog.show()
+        }.start()
     }
 
     private class TinyHttpServer(private val htmlSupplier: () -> String) {
