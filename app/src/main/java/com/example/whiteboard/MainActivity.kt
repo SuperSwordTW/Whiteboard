@@ -302,6 +302,7 @@ class MainActivity : AppCompatActivity() {
         val redoButton = findViewById<ImageButton>(R.id.btn_redo)
         val mathButton = findViewById<ImageButton>(R.id.btn_math)
         val sendButton = findViewById<ImageButton>(R.id.btn_send)
+        val eraseButton = findViewById<ImageButton>(R.id.btn_erase)
 
         undoButton.setOnClickListener { drawingView.undo() }
         redoButton.setOnClickListener { drawingView.redo() }
@@ -403,6 +404,7 @@ class MainActivity : AppCompatActivity() {
         drawButton.setOnClickListener {
             setActiveTool(drawButton)
             drawingView.setDrawingMode()
+            drawingView.setEraseMode(false)
         }
 
         selectButton.setOnClickListener {
@@ -416,6 +418,11 @@ class MainActivity : AppCompatActivity() {
             drawingView.commitAllActivePaths()
             drawingView.setSelectionMode(true)
             drawingView.setMathingMode(true)
+        }
+
+        eraseButton.setOnClickListener {
+            setActiveTool(eraseButton)
+            drawingView.setEraseMode(true)
         }
 
         prevPageButton.setOnClickListener { previousPage() }
@@ -479,7 +486,8 @@ class MainActivity : AppCompatActivity() {
             findViewById<ImageButton>(R.id.btn_delete),
             findViewById<ImageButton>(R.id.btn_shape),
             findViewById<ImageButton>(R.id.btn_math),
-            findViewById<ImageButton>(R.id.btn_send)
+            findViewById<ImageButton>(R.id.btn_send),
+            findViewById<ImageButton>(R.id.btn_erase)
         )
 
         // Reset all buttons to unselected (removes shadow)
@@ -746,6 +754,24 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    fun insertPage() {
+        drawingView.clearSelectionState()
+
+        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
+
+        val newPage = mutableListOf<Stroke>()
+
+        val insertIndex = currentPageIndex + 1
+        pages.add(insertIndex, newPage)
+
+        currentPageIndex = insertIndex
+
+        drawingView.setStrokes(pages[currentPageIndex])
+
+        drawingView.clearUndoOps()
+
+        updatePageNumber()
+    }
 
 
     fun nextPage() {
@@ -893,6 +919,10 @@ class MainActivity : AppCompatActivity() {
             }
             R.id.action_load -> {
                 showLoadDialog()
+                true
+            }
+            R.id.action_insert_page -> {
+                insertPage()
                 true
             }
             R.id.action_delete_page -> {

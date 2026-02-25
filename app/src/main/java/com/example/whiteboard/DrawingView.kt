@@ -277,6 +277,8 @@ class DrawingView @JvmOverloads constructor(
     // Selection mode flag
     private var isSelecting = false
 
+    private var isErasing = false
+
     private var isDeleting = false
 
     private var isMathing = false
@@ -1089,27 +1091,38 @@ class DrawingView @JvmOverloads constructor(
                     val px = event.getX(i)
                     val py = event.getY(i)
 
-                    activePaths[id]?.let { p ->
-                        // Extend path
-                        p.lineTo(px, py)
+                    if (isErasing) {
+                        for (i in 0 until event.pointerCount) {
+                            val px = event.getX(i)
+                            val py = event.getY(i)
+                            // Adjust the radius (e.g., 30f) based on your needs
+                            eraseAndSplit(px, py, currentPaint.strokeWidth + 20f)
+                        }
+                        invalidate()
+                    }
+                    else {
+                        activePaths[id]?.let { p ->
+                            // Extend path
+                            p.lineTo(px, py)
 
-                        // Invalidate only the segment’s bounding box (+ pad for stroke caps/AA)
-                        val prev = lastPts[id]
-                        if (prev != null) {
-                            val left   = min(prev.x, px)
-                            val right  = max(prev.x, px)
-                            val top    = min(prev.y, py)
-                            val bottom = max(prev.y, py)
-                            val pad = (currentPaint.strokeWidth * 0.75f + 6f).toInt()
-                            invalidate(
-                                (left - pad).toInt(),
-                                (top - pad).toInt(),
-                                (right + pad).toInt(),
-                                (bottom + pad).toInt()
-                            )
-                            prev.set(px, py)
-                        } else {
-                            lastPts[id] = PointF(px, py)
+                            // Invalidate only the segment’s bounding box (+ pad for stroke caps/AA)
+                            val prev = lastPts[id]
+                            if (prev != null) {
+                                val left = min(prev.x, px)
+                                val right = max(prev.x, px)
+                                val top = min(prev.y, py)
+                                val bottom = max(prev.y, py)
+                                val pad = (currentPaint.strokeWidth * 0.75f + 6f).toInt()
+                                invalidate(
+                                    (left - pad).toInt(),
+                                    (top - pad).toInt(),
+                                    (right + pad).toInt(),
+                                    (bottom + pad).toInt()
+                                )
+                                prev.set(px, py)
+                            } else {
+                                lastPts[id] = PointF(px, py)
+                            }
                         }
                     }
                 }
@@ -1508,6 +1521,18 @@ class DrawingView @JvmOverloads constructor(
         isMathing = false
         isDeleting = selecting
         isSending = false
+        isErasing = false
+        selectionPath = null
+        selectedStrokes.clear()
+        invalidate()
+    }
+
+    fun setEraseMode(selecting: Boolean){
+        isSelecting = false
+        isMathing = false
+        isDeleting = false
+        isSending = false
+        isErasing = selecting
         selectionPath = null
         selectedStrokes.clear()
         invalidate()
@@ -1518,6 +1543,7 @@ class DrawingView @JvmOverloads constructor(
         isMathing = false
         isDeleting = false
         isSending = false
+        isErasing = false
         selectionPath = null
         selectedStrokes.clear()
         invalidate()
@@ -1531,12 +1557,14 @@ class DrawingView @JvmOverloads constructor(
         isMathing = selecting
         isDeleting = false
         isSending = false
+        isErasing = false
         invalidate()
     }
 
     fun setSendMathingMode() {
         isSending = true
         isDeleting = false
+        isErasing = false
         isMathing = true
         invalidate()
     }
@@ -1557,6 +1585,66 @@ class DrawingView @JvmOverloads constructor(
         }
         markSelectionBoundsDirty()
         invalidate()
+    }
+
+    private fun eraseAndSplit(ex: Float, ey: Float, eraserRadius: Float) {
+        val eraserRect = RectF(ex - eraserRadius, ey - eraserRadius, ex + eraserRadius, ey + eraserRadius)
+
+        // 1. Query only strokes near the eraser using your SpatialHash
+        val candidates = spatial.query(eraserRect)
+        val toRemove = mutableListOf<Stroke>()
+        val toAdd = mutableListOf<Stroke>()
+
+        for (stroke in candidates) {
+            val strokeData = stroke.toStrokeData() // Convert to points for processing
+            val currentNewPoints = mutableListOf<Pair<Float, Float>>()
+            val splitResults = mutableListOf<List<Pair<Float, Float>>>()
+
+            var hasBeenHit = false
+            for (pt in strokeData.points) {
+                val dist = hypot(pt.first - ex, pt.second - ey)
+                if (dist > eraserRadius) {
+                    currentNewPoints.add(pt)
+                } else {
+                    // Point is erased! If we had a line going, it's now split.
+                    if (currentNewPoints.isNotEmpty()) {
+                        splitResults.add(ArrayList(currentNewPoints))
+                        currentNewPoints.clear()
+                    }
+                    hasBeenHit = true
+                }
+            }
+
+            // Add the trailing segment if it exists
+            if (currentNewPoints.isNotEmpty()) {
+                splitResults.add(currentNewPoints)
+            }
+
+            if (hasBeenHit) {
+                toRemove.add(stroke)
+                // 2. Turn each new list of points back into a selectable Stroke
+                for (pointList in splitResults) {
+                    if (pointList.size >= 1) { // Keep even dots
+                        val newData = StrokeData(pointList, stroke.paint.color, stroke.paint.strokeWidth)
+                        toAdd.add(newData.toStroke())
+                    }
+                }
+            }
+        }
+
+        // 3. Update the data structure
+        if (toRemove.isNotEmpty()) {
+            toRemove.forEach {
+                unindexStroke(it)
+                strokes.remove(it)
+            }
+            toAdd.forEach {
+                strokes.add(it)
+                indexStroke(it)
+                commitStrokeToStatic(it) // Re-bake into static layer
+            }
+            requestStaticRebuild() // Full refresh to clean up the "holes"
+        }
     }
 
     /** Delete selected strokes */

@@ -13,4 +13,5 @@
     <string name="desmos" />
     <string name="shape" />
     <string name="delete_page">Delete this page</string>
+    <string name="erase_selected" />
 </resources>
