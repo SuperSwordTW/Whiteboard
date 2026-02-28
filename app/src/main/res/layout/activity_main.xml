@@ -115,6 +115,15 @@
                     />
 
                 <ImageButton
+                    android:id="@+id/btn_erase"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_erase"
+                    android:background="@drawable/btn_tool_background"
+                    android:contentDescription="@string/erase_selected"
+                    />
+
+                <ImageButton
                     android:id="@+id/btn_shape"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -150,14 +159,7 @@
                     android:contentDescription="@string/desmos"
                     />
 
-                <ImageButton
-                    android:id="@+id/btn_erase"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:src="@drawable/ic_delete"
-                    android:background="@drawable/btn_tool_background"
-                    android:contentDescription="@string/erase_selected"
-                    />
+
 
                 <ImageButton
                     android:id="@+id/btn_undo"

@@ -868,6 +868,16 @@ class MainActivity : AppCompatActivity() {
     @OptIn(ExperimentalStdlibApi::class)
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
+            R.id.action_credits -> {
+                val creditsText = "App Created by 林子宸、鄭宇宸\nVersion 6.0\n"
+
+                AlertDialog.Builder(this)
+                    .setTitle("Credits")
+                    .setMessage(creditsText)
+                    .setPositiveButton("OK", null)
+                    .show()
+                true
+            }
             R.id.action_save -> {
                 if (currentFileName == null) {
                     showSaveDialog()

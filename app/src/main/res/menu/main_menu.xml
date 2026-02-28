@@ -2,6 +2,11 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
 <item
+    android:id="@+id/action_credits"
+    android:title="Credits"
+    app:showAsAction="never" />
+
+<item
     android:id="@+id/action_share_qr"
     android:title="Share QR Code"
     app:showAsAction="never" />
