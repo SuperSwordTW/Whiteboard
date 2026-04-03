@@ -54,7 +54,6 @@ class DrawingView @JvmOverloads constructor(
             }
         }
 
-        // INSERT inside SpatialHash
         fun purge(stroke: Stroke) {
             val it = grid.entries.iterator()
             while (it.hasNext()) {
@@ -120,10 +119,8 @@ class DrawingView @JvmOverloads constructor(
     private val strokes = mutableListOf<Stroke>()
     private var currentPath: Path? = null
 
-    // INSERT after existing field declarations
     private val spatial = SpatialHash(128f)
     private val strokeAabbs = ConcurrentHashMap<Stroke, RectF>()
-    private val tmpStrokeBounds = RectF()
 
     private fun aabbOf(stroke: Stroke): RectF {
         // Lazily compute and cache expanded AABB
@@ -191,6 +188,18 @@ class DrawingView @JvmOverloads constructor(
 
         /** Remove: arbitrary strokes removed together, each with its original index. */
         data class Remove(val removed: List<Pair<Int, Stroke>>) : UndoOp()
+
+        /** Replace: replaces the strokes during erasing. */
+        data class Replace(val removed: List<Pair<Int, Stroke>>, val added: List<Stroke>) : UndoOp()
+
+        /** Transform: strokes transformed. */
+        data class Transform(
+            val strokes: List<Stroke>,
+            val oldPaths: List<Path>,
+            val oldWidths: List<Float>,
+            val newPaths: List<Path>,
+            val newWidths: List<Float>
+        ) : UndoOp()
     }
 
     private val undoOps = ArrayDeque<UndoOp>()
@@ -210,7 +219,7 @@ class DrawingView @JvmOverloads constructor(
         while (undoOps.size > MAX_HISTORY) undoOps.removeFirst()
     }
 
-    private fun applyRemoveOp(op: UndoOp.Remove, alsoIndex: Boolean) {
+    private fun applyRemoveOp(op: UndoOp.Remove) {
         // Remove from highest index first to keep indices valid
         op.removed.sortedByDescending { it.first }.forEach { (idx, s) ->
             if (idx in 0..strokes.lastIndex && strokes[idx] === s) {
@@ -299,6 +308,10 @@ class DrawingView @JvmOverloads constructor(
 
     private var isTransformingSelection: Boolean = false
 
+    private var transformInitialStrokes = listOf<Stroke>()
+    private var transformInitialPaths = listOf<Path>()
+    private var transformInitialWidths = listOf<Float>()
+
     private val staticExclusion = mutableSetOf<Stroke>() // strokes temporarily excluded from static layer while transforming
 
     private fun allocateStaticLayer(width: Int, height: Int) {
@@ -382,15 +395,15 @@ class DrawingView @JvmOverloads constructor(
     }
 
 
-    private fun copyStrokes(strokes: List<Stroke>): List<Stroke> {
-        return strokes.map { stroke ->
-            Stroke(Path(stroke.path), Paint(stroke.paint))
-        }
-    }
 
     private fun beginTransformingSelection() {
         if (selectedStrokes.isEmpty()) return
         isTransformingSelection = true
+
+        transformInitialStrokes = selectedStrokes.toList()
+        transformInitialPaths = selectedStrokes.map { Path(it.path) }
+        transformInitialWidths = selectedStrokes.map { it.paint.strokeWidth }
+
         staticExclusion.clear()
         staticExclusion.addAll(selectedStrokes) // exclude from static layer
         rebuildStaticLayer()                    // rebuild without the selected strokes baked in
@@ -401,6 +414,25 @@ class DrawingView @JvmOverloads constructor(
         if (!isTransformingSelection) return
         isTransformingSelection = false
         // Union of final bounds of transformed strokes
+
+        val actuallyTransformed = transformInitialStrokes.any { it in dirtyTransformStrokes }
+        if (actuallyTransformed && transformInitialStrokes.isNotEmpty()) {
+            val newPaths = transformInitialStrokes.map { Path(it.path) }
+            val newWidths = transformInitialStrokes.map { it.paint.strokeWidth }
+            pushUndo(UndoOp.Transform(
+                strokes = transformInitialStrokes,
+                oldPaths = transformInitialPaths,
+                oldWidths = transformInitialWidths,
+                newPaths = newPaths,
+                newWidths = newWidths
+            ))
+        }
+
+        transformInitialStrokes = emptyList()
+        transformInitialPaths = emptyList()
+        transformInitialWidths = emptyList()
+
+
         val union = RectF()
         var has = false
         for (s in selectedStrokes) {
@@ -718,8 +750,8 @@ class DrawingView @JvmOverloads constructor(
         // This ensures later mutations never affect previously saved/loaded pages.
         val copy = ArrayList<Stroke>(newStrokes.size)
         for (s in newStrokes) {
-            val p = android.graphics.Path(s.path)
-            val paint = android.graphics.Paint(s.paint)
+            val p = Path(s.path)
+            val paint = Paint(s.paint)
             copy.add(Stroke(p, paint))
         }
 
@@ -750,7 +782,6 @@ class DrawingView @JvmOverloads constructor(
         strokeWidth = 6f
     }
 
-    private val tempBounds = RectF()
 
     private var previewPath: Path? = null
     private val previewPaint = Paint().apply {
@@ -817,15 +848,10 @@ class DrawingView @JvmOverloads constructor(
 
     private var activeHandleIndex: Int = -1 // -1 = none, 0..3 = which corner
 
-    // Reuse temp values to avoid allocations
-    private val touchPoint = PointF()
-    private val tmpVec = PointF()
-
     private enum class TransformMode {
         NONE, SCALE, ROTATE, DRAG
     }
     private var transformMode = TransformMode.NONE
-    private var activeHandle: PointF? = null
 
     private fun getHandleAt(x: Float, y: Float): Int {
         for (i in handlePoints.indices) {
@@ -1149,8 +1175,6 @@ class DrawingView @JvmOverloads constructor(
     private var isDraggingSelection = false
     private var lastTouchX = 0f
     private var lastTouchY = 0f
-
-    private val tmpRect = RectF()
     private val tmpMatrix = Matrix()
 
     interface OnRecognizeStrokesListener {
@@ -1330,8 +1354,6 @@ class DrawingView @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (transformMode == TransformMode.NONE && !isDraggingSelection && selectionPath != null) {
                     if (indexDirty) {
-                        // If you implemented a spatial hash earlier, make sure to update it here.
-                        // Example with AABB cache or spatial structure:
                         // Super Important
                         if (dirtyTransformStrokes.isNotEmpty()) {
                             // Reindex only those strokes whose geometry changed
@@ -1339,9 +1361,6 @@ class DrawingView @JvmOverloads constructor(
                                 reindexStroke(s)
                             }
                             dirtyTransformStrokes.clear()
-                        } else {
-                            // Added/removed/undo/redo or unknown mutations → safest is full rebuild
-//                            rebuildSpatialIndex()
                         }
                         indexDirty = false
                     }
@@ -1378,6 +1397,14 @@ class DrawingView @JvmOverloads constructor(
                     }
                 }
                 endTransformingSelection()
+
+                if (dirtyTransformStrokes.isNotEmpty()) {
+                    for (s in dirtyTransformStrokes) {
+                        reindexStroke(s)
+                    }
+                    dirtyTransformStrokes.clear()
+                }
+
                 isDraggingSelection = false
                 activeHandleIndex = -1
                 transformMode = TransformMode.NONE
@@ -1395,48 +1422,10 @@ class DrawingView @JvmOverloads constructor(
         commitStrokeToStatic(newStroke)
     }
 
-    // 1) ADD — helper: only index/draw strokes that can actually render
-    private fun isRenderable(s: Stroke): Boolean {
-        // Non-positive width or fully transparent paint → not drawn but could still be "hittable" if indexed.
-        if (s.paint.strokeWidth <= 0f) return false
-        if (s.paint.alpha <= 0) return false
-
-        // Empty/degenerate path → nothing to draw; also skip from indexing
-        val r = android.graphics.RectF()
-        s.path.computeBounds(r, true)
-        if (r.isEmpty) return false
-
-        return true
-    }
-
-    // 2) ADD — helper: replace current stroke set and rebuild ALL derived state cleanly
-    private fun replaceAllStrokes(newStrokes: List<Stroke>) {
-        // Keep only strokes that would actually render to prevent "invisible but selectable" artifacts
-        val renderable = newStrokes.filter(::isRenderable)
-
-        // Swap list
-        strokes.clear()
-        strokes.addAll(renderable)
-
-        // Hard reset of caches/indices
-        strokeAabbs.clear()
-        indexDirty = true
-        rebuildSpatialIndex()
-        // Warm AABB cache for current strokes so selection math sees the fresh bounds only
-        for (s in strokes) aabbOf(s)
-
-        // Invalidate any transform/selection leftovers that could reference old Stroke instances
-        dirtyTransformStrokes.clear()
-        selectedStrokes.clear()
-        selectionPath = null
-        markSelectionBoundsDirty()
-        requestStaticRebuild()
-        // Redraw
-        invalidate()
-    }
-
-    // 3) REPLACE — your undo() with this version
     fun undo() {
+        if (selectedStrokes.isNotEmpty() || selectionPath != null) {
+            clearSelectionState()
+        }
         if (undoOps.isEmpty()) return
         val op = undoOps.removeLast()
         when (op) {
@@ -1472,10 +1461,43 @@ class DrawingView @JvmOverloads constructor(
                 markSelectionBoundsDirty()
                 invalidate()
             }
+            is UndoOp.Replace -> {
+                for (s in op.added.asReversed()) {
+                    val idx = strokes.indexOf(s)
+                    if (idx >= 0) {
+                        unindexStroke(s)
+                        strokes.removeAt(idx)
+                    }
+                }
+
+                for ((idx, s) in op.removed.sortedBy { it.first }) {
+                    val insertAt = idx.coerceIn(0, strokes.size)
+                    strokes.add(insertAt, s)
+                    indexStroke(s)
+                }
+                pushRedo(op)
+                requestStaticRebuild()
+            }
+            is UndoOp.Transform -> {
+                for (i in op.strokes.indices) {
+                    val s = op.strokes[i]
+                    s.path.set(op.oldPaths[i]) // Restore original Path
+                    s.paint.strokeWidth = op.oldWidths[i] // Restore original Width
+                    markDirty(s)
+                    reindexStroke(s)
+                }
+                pushRedo(op) // Pass it to Redo
+                markSelectionBoundsDirty()
+                requestStaticRebuild()
+                invalidate()
+            }
         }
     }
 
     fun redo() {
+        if (selectedStrokes.isNotEmpty() || selectionPath != null) {
+            clearSelectionState()
+        }
         if (redoOps.isEmpty()) return
         val op = redoOps.removeLast()
         when (op) {
@@ -1488,9 +1510,38 @@ class DrawingView @JvmOverloads constructor(
             }
             is UndoOp.Remove -> {
                 // Remove again
-                applyRemoveOp(op, alsoIndex = false)
+                applyRemoveOp(op)
                 // Push back onto undo without clearing redo stack
                 pushUndoNoClearRedo(op)
+                invalidate()
+            }
+            is UndoOp.Replace -> {
+                op.removed.sortedByDescending { it.first }.forEach { (idx, s) ->
+                    val pos = strokes.indexOf(s)
+                    if (pos >= 0) {
+                        unindexStroke(s)
+                        strokes.removeAt(pos)
+                    }
+                }
+
+                for (s in op.added) {
+                    strokes.add(s)
+                    indexStroke(s)
+                }
+                pushUndoNoClearRedo(op)
+                requestStaticRebuild()
+            }
+            is UndoOp.Transform -> {
+                for (i in op.strokes.indices) {
+                    val s = op.strokes[i]
+                    s.path.set(op.newPaths[i]) // Apply transformed Path
+                    s.paint.strokeWidth = op.newWidths[i] // Apply transformed Width
+                    markDirty(s)
+                    reindexStroke(s)
+                }
+                pushUndoNoClearRedo(op)
+                markSelectionBoundsDirty()
+                requestStaticRebuild()
                 invalidate()
             }
         }
@@ -1589,24 +1640,22 @@ class DrawingView @JvmOverloads constructor(
 
     private fun eraseAndSplit(ex: Float, ey: Float, eraserRadius: Float) {
         val eraserRect = RectF(ex - eraserRadius, ey - eraserRadius, ex + eraserRadius, ey + eraserRadius)
-
-        // 1. Query only strokes near the eraser using your SpatialHash
         val candidates = spatial.query(eraserRect)
-        val toRemove = mutableListOf<Stroke>()
-        val toAdd = mutableListOf<Stroke>()
+
+        val removedWithIndices = mutableListOf<Pair<Int, Stroke>>()
+        val addedStrokes = mutableListOf<Stroke>()
 
         for (stroke in candidates) {
-            val strokeData = stroke.toStrokeData() // Convert to points for processing
+            val strokeData = stroke.toStrokeData()
             val currentNewPoints = mutableListOf<Pair<Float, Float>>()
             val splitResults = mutableListOf<List<Pair<Float, Float>>>()
-
             var hasBeenHit = false
+
             for (pt in strokeData.points) {
                 val dist = hypot(pt.first - ex, pt.second - ey)
                 if (dist > eraserRadius) {
                     currentNewPoints.add(pt)
                 } else {
-                    // Point is erased! If we had a line going, it's now split.
                     if (currentNewPoints.isNotEmpty()) {
                         splitResults.add(ArrayList(currentNewPoints))
                         currentNewPoints.clear()
@@ -1614,36 +1663,39 @@ class DrawingView @JvmOverloads constructor(
                     hasBeenHit = true
                 }
             }
-
-            // Add the trailing segment if it exists
-            if (currentNewPoints.isNotEmpty()) {
-                splitResults.add(currentNewPoints)
-            }
+            if (currentNewPoints.isNotEmpty()) splitResults.add(currentNewPoints)
 
             if (hasBeenHit) {
-                toRemove.add(stroke)
-                // 2. Turn each new list of points back into a selectable Stroke
-                for (pointList in splitResults) {
-                    if (pointList.size >= 1) { // Keep even dots
-                        val newData = StrokeData(pointList, stroke.paint.color, stroke.paint.strokeWidth)
-                        toAdd.add(newData.toStroke())
+                val idx = strokes.indexOf(stroke)
+                if (idx >= 0) {
+                    removedWithIndices.add(idx to stroke)
+                    for (pointList in splitResults) {
+                        if (pointList.isNotEmpty()) {
+                            val newData = StrokeData(pointList, stroke.paint.color, stroke.paint.strokeWidth)
+                            addedStrokes.add(newData.toStroke())
+                        }
                     }
                 }
             }
         }
 
-        // 3. Update the data structure
-        if (toRemove.isNotEmpty()) {
-            toRemove.forEach {
-                unindexStroke(it)
-                strokes.remove(it)
+        if (removedWithIndices.isNotEmpty()) {
+            // Apply changes to the board
+            removedWithIndices.forEach { (_, s) ->
+                unindexStroke(s)
+                strokes.remove(s)
             }
-            toAdd.forEach {
-                strokes.add(it)
-                indexStroke(it)
-                commitStrokeToStatic(it) // Re-bake into static layer
+            addedStrokes.forEach { s ->
+                strokes.add(s)
+                indexStroke(s)
+                commitStrokeToStatic(s)
             }
-            requestStaticRebuild() // Full refresh to clean up the "holes"
+
+            // Push the transaction to the undo stack
+            pushUndo(UndoOp.Replace(removedWithIndices, addedStrokes))
+
+            requestStaticRebuild()
+            invalidate()
         }
     }
 

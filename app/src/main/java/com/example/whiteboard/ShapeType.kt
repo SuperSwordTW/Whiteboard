@@ -11,5 +11,4 @@ enum class ShapeType {
     SPHERE,
     PARABOLA,
     DOTTED
-    // Add more shapes here easily
 }

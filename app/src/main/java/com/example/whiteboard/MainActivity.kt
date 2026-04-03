@@ -86,30 +86,6 @@ class MainActivity : AppCompatActivity() {
 
     private var editorBinding: EditorBinding? = null
 
-    private class ThemeAdapter(
-        private val context: android.content.Context,
-        private val names: Array<String>,
-        private val bgColors: IntArray,
-    ) : android.widget.BaseAdapter() {
-
-        override fun getCount(): Int = names.size
-        override fun getItem(position: Int): Any = names[position]
-        override fun getItemId(position: Int): Long = position.toLong()
-
-        override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
-            val view = convertView ?: android.view.LayoutInflater.from(context)
-                .inflate(R.layout.item_theme_preview, parent, false)
-
-            val bgPreview = view.findViewById<View>(R.id.bg_preview)
-            val nameView = view.findViewById<TextView>(R.id.theme_name)
-
-            bgPreview.setBackgroundColor(bgColors[position])
-            nameView.text = names[position]
-
-            return view
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -497,8 +473,6 @@ class MainActivity : AppCompatActivity() {
         selectedButton.isSelected = true
     }
 
-    private val tmpRect = RectF()
-
 //    private val wolfram by lazy {
 //        WolframAlphaClient(appId = "8GAVHGL5LL")
 //    }
@@ -554,15 +528,15 @@ class MainActivity : AppCompatActivity() {
 //        showRecognizedMath(input, strokes)
 //    }
 
-    private fun concatLatex(base: String?, next: String?): String {
-        val b = base?.trim().orEmpty()
-        val n = next?.trim().orEmpty()
-        if (b.isEmpty()) return n
-        if (n.isEmpty()) return b
-
-        // Join with a space so things like "x=1" and "y=2" don't collide
-        return "$b \\newline $n"
-    }
+//    private fun concatLatex(base: String?, next: String?): String {
+//        val b = base?.trim().orEmpty()
+//        val n = next?.trim().orEmpty()
+//        if (b.isEmpty()) return n
+//        if (n.isEmpty()) return b
+//
+//        // Join with a space so things like "x=1" and "y=2" don't collide
+//        return "$b \\newline $n"
+//    }
 
 
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
@@ -1297,16 +1271,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    // INSERT: below your existing helper methods (e.g., under readPagesStreaming)
-
-    private val PUBLIC_SUBDIR = Environment.DIRECTORY_DOCUMENTS + "/Whiteboard"
 
     /**
      * Save the given snapshot to public shared storage (Documents/Whiteboard) via MediaStore.
      * Returns the Uri on success, or null on failure.
      */
-    // REPLACE the entire method
-    // REPLACE the entire method
     private fun saveToPublicSnapshot(fileName: String, snapshot: List<List<StrokeData>>): Uri {
         val finalName = resolveFinalSaveName(fileName)
 
@@ -1513,7 +1482,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "A save is already in progress…", Toast.LENGTH_SHORT).show()
         }
     }
-    // REPLACE the entire loadFromFile(fileName) with this version
+
     private fun loadFromFile(fileName: String) {
         val name = resolveFinalSaveName(fileName)
 
@@ -1637,27 +1606,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Detect gzip magic by reopening stream (we can't reset openFileInput). */
-    private fun isGzipStream(base: InputStream): Boolean {
-        // We cannot mark/reset the Android FileInputStream reliably;
-        // Use magic number detection by separately reopening via helper.
-        return try {
-            val fis = base as? FileInputStream
-            if (fis == null) false else {
-                val fd = fis.fd
-                // Can't seek FileInputStream directly; we simply return false here.
-                // We'll instead detect by filename path using resolveLoadName().
-                false
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /** Reopen a fresh InputStream for the given file name. */
-    private fun baseInReset(fileName: String): InputStream {
-        return BufferedInputStream(openFileInput(fileName))
-    }
 
     /** Streaming reader for pages -> strokes */
     private fun readPagesStreaming(reader: JsonReader): MutableList<MutableList<Stroke>> {
@@ -1723,45 +1671,6 @@ class MainActivity : AppCompatActivity() {
             }
             if (reader.peek() == JsonToken.END_ARRAY) reader.endArray()
         } catch (_: Exception) {}
-    }
-
-    private fun skipValueSafely(reader: JsonReader) {
-        try {
-            reader.skipValue()
-        } catch (e: EOFException) {
-            // End of file while skipping — nothing more to do
-            Log.e("Load", "EOF while skipping malformed value", e)
-        } catch (e: Exception) {
-            Log.e("Load", "Error while skipping malformed value", e)
-        }
-    }
-
-
-
-
-    private fun saveWhiteboard() {
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
-
-        val dataPages = pages.map { page -> page.map { it.toStrokeData() } }
-        val json = gson.toJson(dataPages)
-        val file = File(filesDir, saveFileName)
-        file.writeText(json)
-    }
-
-    private fun loadWhiteboard() {
-        val file = File(filesDir, saveFileName)
-        if (file.exists()) {
-            val json = file.readText()
-            val type = object : TypeToken<MutableList<List<StrokeData>>>() {}.type
-            val dataPages: MutableList<List<StrokeData>> = gson.fromJson(json, type)
-
-            pages.clear()
-            pages.addAll(dataPages.map { page -> page.map { it.toStroke() }.toMutableList() })
-
-            currentPageIndex = 0
-            drawingView.setStrokes(pages[currentPageIndex].toMutableList())
-            updatePageNumber()
-        }
     }
 
     private var galleryServer: TinyHttpServer? = null
@@ -2227,93 +2136,6 @@ class MainActivity : AppCompatActivity() {
             canvas.drawPath(s.path, s.paint)
         }
         return bmp
-    }
-
-    fun createPageGalleryLink(): Uri? {
-        // Ensure the current page's latest strokes are captured
-        pages[currentPageIndex] = drawingView.getStrokes().toMutableList()
-
-        // Defensive: nothing to do if there are no pages
-        if (pages.isEmpty()) return null
-
-        // Render each page to base64 PNG
-        val imagesBase64 = ArrayList<String>(pages.size)
-        for (i in pages.indices) {
-            val bmp = renderPageBitmap(pages[i])
-            val baos = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
-            bmp.recycle()
-            val b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
-            imagesBase64.add(b64)
-        }
-
-        // Build minimal, responsive HTML
-        val html = buildString {
-            append(
-                """
-            <!doctype html>
-            <html>
-            <head>
-              <meta charset="utf-8"/>
-              <meta name="viewport" content="width=device-width, initial-scale=1"/>
-              <title>Whiteboard Pages</title>
-              <style>
-                :root { --gap: 12px; --bg:#111; --fg:#eee; }
-                body {
-                  margin:0; padding:16px; background:var(--bg); color:var(--fg);
-                  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-                }
-                h1 { font-size: 18px; margin: 0 0 12px; }
-                .grid {
-                  display: grid;
-                  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-                  gap: var(--gap);
-                }
-                .card {
-                  background:#1b1b1b; border-radius:12px; padding:12px;
-                  box-shadow: 0 2px 8px rgba(0,0,0,.35);
-                }
-                .card h2 {
-                  margin:0 0 8px; font-size:14px; font-weight:600; color:#bbb;
-                }
-                .shot {
-                  width:100%; height:auto; display:block; border-radius:8px;
-                  background:#000;
-                }
-              </style>
-            </head>
-            <body>
-              <h1>Whiteboard — ${pages.size} page${if (pages.size == 1) "" else "s"}</h1>
-              <div class="grid">
-            """.trimIndent()
-            )
-            imagesBase64.forEachIndexed { index, b64 ->
-                append(
-                    """
-                <div class="card">
-                  <h2>Page ${index + 1}</h2>
-                  <img class="shot" loading="lazy" src="data:image/png;base64,$b64" alt="Page ${index + 1}" />
-                </div>
-                """.trimIndent()
-                )
-            }
-            append(
-                """
-              </div>
-            </body>
-            </html>
-            """.trimIndent()
-            )
-        }
-
-        // Write HTML to externalCache so we can FileProvider it
-        val outFile = File(externalCacheDir ?: cacheDir, "whiteboard_pages_${System.currentTimeMillis()}.html")
-        FileOutputStream(outFile).use { it.write(html.toByteArray(Charsets.UTF_8)) }
-
-        // Turn it into a content:// Uri and grant read permission
-        val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", outFile)
-        grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        return uri
     }
 
     private fun generateQrBitmap(content: String, size: Int = 720): Bitmap {
