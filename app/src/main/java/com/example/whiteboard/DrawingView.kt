@@ -1369,7 +1369,6 @@ class DrawingView @JvmOverloads constructor(
                     selectedStrokes.clear()
                     val aabb = RectF()
                     selectionPath!!.computeBounds(aabb, true)
-                    // Small expansion helps catch near-line hits
                     aabb.inset(-24f, -24f)
 
                     val candidates = spatial.query(aabb)

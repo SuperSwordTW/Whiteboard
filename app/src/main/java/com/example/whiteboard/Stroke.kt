@@ -152,7 +152,7 @@ fun recognizeSelectedStrokes(editor: Editor, strokes: List<Stroke>, editorView: 
 
         // DOWN
         pm.getPosTan(0f, pos, null)
-        val downX = pos[0] - (viewOnScreen.getOrNull(0) ?: 0) // convert if your path is screen coords
+        val downX = pos[0] - (viewOnScreen.getOrNull(0) ?: 0) // convert if path is screen coords
         val downY = pos[1] - (viewOnScreen.getOrNull(1) ?: 0)
         Log.v("Mathmode", "pointer $pointerId DOWN at raw(${pos[0]},${pos[1]}) local($downX,$downY)")
         val downEvent = PointerEvent(PointerEventType.DOWN, downX, downY, timestamp, 0.5f, 0f, 0f, PointerType.PEN, pointerId)

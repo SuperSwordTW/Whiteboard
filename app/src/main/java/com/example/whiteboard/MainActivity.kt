@@ -101,7 +101,7 @@ class MainActivity : AppCompatActivity() {
         val conf = engine.configuration
         val confDir = "zip://${packageCodePath}!/assets/conf"
         conf.setStringArray("configuration-manager.search-path", arrayOf(confDir))
-        val tempDir = filesDir.path + File.separator + "不要開"
+        val tempDir = filesDir.path + File.separator
         conf.setString("content-package.temp-folder", tempDir)
 
         // Create or open package
@@ -201,8 +201,6 @@ class MainActivity : AppCompatActivity() {
                   expressions: true,
                   expressionsCollapsed: true
                 });
-                // Optional: add a default expression
-                // calculator.setExpression({ id: 'default', latex: 'y=x^2' });
               </script>
             </body>
             </html>
@@ -240,7 +238,7 @@ class MainActivity : AppCompatActivity() {
 
 
 
-//                    onRecognizedMath(latex, strokes)
+                    //onRecognizedMath(latex, strokes)
 
                     showRecognizedMath(latex, strokes)
 
