@@ -1578,6 +1578,9 @@ class DrawingView @JvmOverloads constructor(
     }
 
     fun setEraseMode(selecting: Boolean){
+        if (selecting == true) {
+            shapeMode = null
+        }
         isSelecting = false
         isMathing = false
         isDeleting = false
@@ -1670,8 +1673,14 @@ class DrawingView @JvmOverloads constructor(
                     removedWithIndices.add(idx to stroke)
                     for (pointList in splitResults) {
                         if (pointList.isNotEmpty()) {
-                            val newData = StrokeData(pointList, stroke.paint.color, stroke.paint.strokeWidth)
-                            addedStrokes.add(newData.toStroke())
+                            val newPath = Path()
+                            newPath.moveTo(pointList[0].first, pointList[0].second)
+                            for (i in 1 until pointList.size) {
+                                newPath.lineTo(pointList[i].first, pointList[i].second)
+                            }
+                            // Create a new Paint from the original stroke's Paint to preserve PathEffects (like dotted lines)
+                            val newPaint = Paint(stroke.paint)
+                            addedStrokes.add(Stroke(newPath, newPaint))
                         }
                     }
                 }
